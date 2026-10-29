@@ -81,7 +81,12 @@ if ! "$bin" --check-config; then
   echo "Configuración inválida: no se reinició el servicio. Corríjala y ejecute de nuevo ./install.sh" >&2
   exit 1
 fi
+install -Dm755 "$here/repair.sh" "$share/repair.sh"
+mkdir -p "$HOME/.config/systemd/user"
+install -m644 "$here/systemd/touchbar-plus-repair.service" "$here/systemd/touchbar-plus-repair.path" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
+systemctl --user enable touchbar-plus-repair.path touchbar-plus-repair.service >/dev/null 2>&1 || true
+systemctl --user start touchbar-plus-repair.path || true
 systemctl --user restart kait2en-touchbar
 
 if ! gnome-extensions list 2>/dev/null | grep -qx "$uuid"; then

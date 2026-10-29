@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-apply Touch Bar Plus after a KaiT2en update
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/touchbar-plus/repair.sh
+
+[Install]
+WantedBy=default.target

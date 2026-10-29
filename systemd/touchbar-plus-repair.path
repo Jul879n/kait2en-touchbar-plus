@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch KaiT2en's Touch Bar daemon for updates
+
+[Path]
+PathChanged=/usr/local/bin/kait2en-touchbar
+
+[Install]
+WantedBy=default.target
