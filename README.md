@@ -1,5 +1,9 @@
 # kait2en-touchbar-plus
 
+> **Fork no oficial** de [KaiT2en-Fedora](https://github.com/kaiT2en/KaiT2en-Fedora), de uso personal y sin relación con el proyecto original.
+> **Aviso sobre IA:** este código fue desarrollado con ayuda de IA (Claude, de Anthropic) y revisado y probado por su autor en su propio equipo (MacBook T2). Úselo bajo su responsabilidad.
+> Licencia GPL-3.0-or-later; los íconos son de [Lucide](https://lucide.dev) (ISC, ver `daemon/icons/lucide/LICENSE`).
+
 Fork del daemon `t2-touchbar` de KaiT2en (`daemon/`), una extensión de GNOME Shell (`extension/`) y la app
 «Touch Bar Plus» (`app/`). El checkout de `/usr/local/src/KaiT2en-Fedora` no se toca.
 
