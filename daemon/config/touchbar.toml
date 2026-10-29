@@ -1,0 +1,44 @@
+# The Touch Bar is always dark until touched or Fn is pressed. These values
+# bound the duration learned independently for the media and function layers.
+minimum_timeout_ms = 5000
+maximum_timeout_ms = 30000
+continuation_window_ms = 15000
+fn_long_press_ms = 600
+
+# t2tb_backlight has only a few hardware levels. Values above its maximum are
+# clamped by the daemon.
+active_brightness = 128
+haptic_feedback = true
+# Set false to play the key-press waveform only, without a touch-up waveform.
+haptic_touch_up = true
+
+
+# Glyph color as #rrggbb. The default is a cool white that matches the slightly
+# blue keyboard backlight. Outlines and the pressed state are derived from it.
+key_color = "#dce6ff"
+
+# Multi-finger swipes. On the dark bar every volume_swipe_step_px of horizontal
+# two-finger travel sends one volume step (right is louder), and every
+# brightness_swipe_step_px of three-finger travel one display brightness step
+# (right is brighter). On the lit bar a two-finger swipe of
+# mode_swipe_px switches between the media and F-key rows. A touch waits up to
+# two_finger_window_ms for a second finger before it wakes the bar or presses
+# a key. A tap shorter than that fires on release.
+two_finger_window_ms = 100
+volume_swipe_step_px = 40
+brightness_swipe_step_px = 40
+mode_swipe_px = 160
+
+# Dim the key glyphs along with the keyboard backlight (read from
+# /sys/class/leds/*kbd_backlight, updated on UPower changes). The bar keeps a
+# readable minimum while the keyboard backlight is off.
+follow_keyboard_backlight = true
+
+# Show the escape key and restore the keyboard backlight on keyboard,
+# trackpad or Touch Bar activity. Both go dark after this idle period.
+activity_backlight = true
+activity_timeout_ms = 30000
+
+# Show "Artist – Title" on the dark bar for five seconds when a media player
+# (MPRIS) starts a new track, with previous/next keys at both ends.
+show_track_changes = true

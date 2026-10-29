@@ -1,0 +1,70 @@
+# Touch Bar Plus: disposición de la barra. Edita con la app «Touch Bar Plus»
+# o a mano; reinicia con:  systemctl --user restart kait2en-touchbar
+#
+# Tipos de ítem: controls (botón único: volumen, brillo y luz del teclado con sliders)
+#   brightness keyboard_light playback volume key screenshot
+#   toggle(what = dnd|night_light|caffeine|wifi|bluetooth) now_playing clock
+#   weather battery cpu memory temperature fan network next_event pomodoro
+#   emoji windows spacer
+# Cada ítem puede llevar col (1 a 24) y span (ancho en columnas, 1 a 24): la barra es una
+# cuadrícula de 24 columnas. Sin col, sigue al ítem anterior; sin span, usa su ancho natural.
+# Ejemplo: { type = "clock", col = 21, span = 4 }. Los huecos quedan en blanco.
+# Mínimo de span: el número de celdas del ítem (p. ej. playback 3, volume 4; now_playing 2).
+# Un col que solape con el ítem anterior se desplaza a continuación de él, sin aviso.
+# Si los ítems no caben en 24 columnas, la cuadrícula crece más allá de 24.
+# col y span solo valen con layout.toml de 24 columnas: no hay migración desde 12 columnas
+# (un span pensado para 12 se lee ahora como 24, la mitad de ancho).
+# now_playing muestra más botones según su span: 10 pausa, 14 anterior/siguiente, 18 aleatorio/repetir.
+# key: label ASCII 1-12 caracteres y/o icon (Lucide), más send = "ctrl+r" o run = "cmd";
+#   o app = "org.gnome.Nautilus.desktop" (lanza la app con gtk-launch; no admite send ni run).
+
+# Zona fija a la derecha, en todo perfil.
+strip = [ { type = "weather" }, { type = "clock" }, { type = "battery" } ]
+
+# Zona de app cuando ningún perfil coincide.
+default = [ { type = "controls" }, { type = "playback" }, { type = "now_playing" } ]
+
+[[profile]]
+name = "Firefox"
+apps = ["org.mozilla.firefox.desktop"]
+items = [ { type = "key", icon = "arrow-left", send = "alt+left" }, { type = "key", icon = "arrow-right", send = "alt+right" }, { type = "key", icon = "rotate-cw", send = "ctrl+r" }, { type = "key", icon = "plus", send = "ctrl+t" }, { type = "playback" }, { type = "controls" } ]
+
+[[profile]]
+name = "Chrome"
+apps = ["google-chrome.desktop", "com.google.Chrome.desktop"]
+items = [ { type = "key", icon = "arrow-left", send = "alt+left" }, { type = "key", icon = "arrow-right", send = "alt+right" }, { type = "key", icon = "rotate-cw", send = "ctrl+r" }, { type = "key", icon = "plus", send = "ctrl+t" }, { type = "playback" }, { type = "controls" } ]
+
+[[profile]]
+name = "Archivos"
+apps = ["org.gnome.Nautilus.desktop"]
+items = [ { type = "key", icon = "arrow-left", send = "alt+left" }, { type = "key", icon = "arrow-right", send = "alt+right" }, { type = "key", icon = "arrow-up", send = "alt+up" }, { type = "key", icon = "folder-plus", send = "ctrl+shift+n" }, { type = "key", icon = "search", send = "ctrl+f" }, { type = "playback" }, { type = "controls" } ]
+
+[[profile]]
+name = "Terminal"
+apps = ["org.gnome.Ptyxis.desktop", "com.mitchellh.ghostty.desktop"]
+items = [ { type = "key", icon = "plus", send = "ctrl+shift+t" }, { type = "key", icon = "copy", send = "ctrl+shift+c" }, { type = "key", icon = "clipboard-paste", send = "ctrl+shift+v" }, { type = "key", icon = "eraser", send = "ctrl+l" }, { type = "playback" }, { type = "controls" } ]
+
+[clock]
+format = "%H:%M"
+
+[weather]
+location = "auto"        # auto (GeoClue, con respaldo manual) | manual
+latitude = -33.45
+longitude = -70.67
+refresh_min = 15
+
+[pomodoro]
+work_min = 25
+break_min = 5
+
+[now_playing]
+visualizer = true
+
+[controls]
+items = ["volume", "brightness", "keyboard"]   # orden y selección de los sliders
+width_px = 0                                    # 0 (toda la zona de app) o desde 300 (la barra mide 2170 px)
+timeout_ms = 3000                               # se cierra tras este tiempo sin tocar
+
+[emoji]
+# El ícono Lucide se dibuja; el texto es lo que se inserta.
+favorites = [ { icon = "smile", text = "😀" }, { icon = "laugh", text = "😂" }, { icon = "thumbs-up", text = "👍" }, { icon = "heart", text = "❤️" }, { icon = "party-popper", text = "🎉" }, { icon = "flame", text = "🔥" }, { icon = "check", text = "✅" } ]

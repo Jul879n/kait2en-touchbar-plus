@@ -1,0 +1,6 @@
+{
+  "uuid": "touchbar-plus@kait2en",
+  "name": "Touch Bar Plus",
+  "description": "Tells the Touch Bar Plus daemon which app has the focus, lists windows, forwards notifications and IBus suggestions.",
+  "shell-version": ["50"]
+}

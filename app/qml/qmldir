@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+singleton Theme 1.0 Theme.qml
+singleton Dnd 1.0 Dnd.qml

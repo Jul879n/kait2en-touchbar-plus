@@ -1,0 +1,724 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Touch Bar Plus: settings for the kait2en-touchbar-plus daemon (Qt Quick, no GTK)."""
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import tomllib
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "kait2en-touchbar-plus"
+LEGACY_KEYS = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "kait2en-touchbar" / "keys.toml"
+DAEMON = HOME / ".local/bin/kait2en-touchbar-plus"
+SERVICE = "kait2en-touchbar"
+ROOT = Path(__file__).resolve().parent
+
+def detect_language():
+    """`language` of config.toml (auto, es, en); auto follows the locale."""
+    try:
+        setting = tomllib.loads((CONFIG_DIR / "config.toml").read_text(encoding="utf-8")).get("language", "auto")
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        setting = "auto"
+    if setting in ("es", "en"):
+        return setting
+    locale = os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or ""
+    return "en" if locale.startswith("en") else "es"
+
+
+LANG = detect_language()
+
+EN = {
+    "Reproducción (anterior, pausa, siguiente)": "Playback (previous, pause, next)",
+    "Brillo de pantalla": "Screen brightness",
+    "Luz del teclado": "Keyboard light",
+    "Volumen y micrófono": "Volume and microphone",
+    "Tecla personalizada": "Custom key",
+    "Captura de pantalla": "Screenshot",
+    "Interruptor": "Switch",
+    "Canción actual": "Now playing",
+    "Reloj": "Clock",
+    "Clima": "Weather",
+    "Batería": "Battery",
+    "Memoria": "Memory",
+    "Temperatura": "Temperature",
+    "Ventilador": "Fan",
+    "Red": "Network",
+    "Próximo evento": "Next event",
+    "Emojis": "Emoji",
+    "Ventanas": "Windows",
+    "Espacio": "Spacer",
+    "No molestar": "Do not disturb",
+    "Luz nocturna": "Night light",
+    "Cafeína": "Caffeine",
+    "Acción": "Action",
+    "Aceptar": "OK",
+    "Agregar perfil": "Add profile",
+    "Agregar": "Add",
+    "Apariencia y gestos": "Appearance and gestures",
+    "Atajo (ctrl+shift+t) o comando": "Shortcut (ctrl+shift+t) or command",
+    "Atajo de teclado": "Keyboard shortcut",
+    "Comando": "Command",
+    "Atenuar tras (minutos, 0 = nunca)": "Dim after (minutes, 0 = never)",
+    "Avisos": "Alerts",
+    "Apps de Cmd+Tab en la barra": "Cmd+Tab apps on the bar",
+    "Brillo normal": "Normal brightness",
+    "Normal": "Normal",
+    "Tenue": "Dim",
+    "Buscar por nombre": "Search by name",
+    "Cancelar": "Cancel",
+    "Color de los íconos": "Icon color",
+    "El ícono se dibuja en la barra; el texto es lo que se inserta.": "The icon is drawn on the bar; the text is what gets inserted.",
+    "Elegir app": "Choose app",
+    "Elegir app…": "Choose app…",
+    "Elegir ícono": "Choose icon",
+    "Elegir…": "Choose…",
+    "Quitar ícono": "Remove icon",
+    "Emojis favoritos": "Favorite emoji",
+    "Encendido y pantalla OLED": "Power and OLED screen",
+    "Etiqueta (ASCII, 1–12; opcional con ícono)": "Label (ASCII, 1–12; optional with icon)",
+    "Guardar y aplicar": "Save and apply",
+    "Guardado y aplicado.": "Saved and applied.",
+    "Hasta cuatro caben junto a las teclas especiales.": "Up to four fit next to the special keys.",
+    "IDs de app (separados por coma)": "App IDs (comma separated)",
+    "Nombre": "Name",
+    "Nuevo perfil": "New profile",
+    "Perfil agregado.": "Profile added.",
+    "Quitar perfil": "Remove profile",
+    "Restaurar valores por defecto": "Restore defaults",
+    "Restaurar": "Restore",
+    "¿Restaurar valores por defecto?": "Restore defaults?",
+    "Se reemplazan la configuración y la disposición actuales.": "The current settings and layout are replaced.",
+    "Valores restaurados.": "Defaults restored.",
+    "Solo se admiten teclas personalizadas aquí.": "Only custom keys are allowed here.",
+    "Teclas personales de la tercera fila": "Personal keys of the third row",
+    "Texto a insertar": "Text to insert",
+    "Tipo": "Type",
+    "Ubicación": "Location",
+    "Ícono": "Icon",
+    "Ítem": "Item",
+    "Ítems de": "Items of",
+    "atajo": "shortcut",
+    "ejecuta": "runs",
+    "Barra": "Bar",
+    "Touch ID": "Touch ID",
+    "Estilo": "Look",
+    "Vista previa": "Preview",
+    "Colores": "Colors",
+    "Textos": "Texts",
+    "Animación": "Animation",
+    "Movimiento": "Motion",
+    "Completa": "Full",
+    "Sutil": "Subtle",
+    "Ninguna": "None",
+    "Velocidad (%)": "Speed (%)",
+    "Esperando": "Waiting",
+    "Reintentar": "Retry",
+    "Fallo": "Failed",
+    "Desbloqueado": "Unlocked",
+    "Desbloquear con Touch ID": "Unlock with Touch ID",
+    "Intentar de nuevo": "Try again",
+    "Usar contraseña": "Use password",
+    "Pulso": "Pulse",
+    "Tecla": "Key",
+    "Escáner": "Scanner",
+    "Hilo de luz": "Light thread",
+    "Cadena de puntos": "Dot chain",
+    "Resplandor": "Glow",
+    "Ondas que salen de la huella.": "Rings spread from the fingerprint.",
+    "Una tecla con un destello que la cruza.": "A key with a glint crossing it.",
+    "Una línea de luz recorre la huella.": "A line of light scans the fingerprint.",
+    "Un hilo viaja por el borde hacia el lector.": "A thread runs along the edge toward the reader.",
+    "Seis puntos se encienden hacia el lector.": "Six dots light up toward the reader.",
+    "Un halo ilumina el borde junto al sensor.": "A halo lights the edge beside the sensor.",
+    "Imágenes fijas; el movimiento solo se ve en la barra.": "Still images; the motion only shows on the bar.",
+    "Vacío usa el texto del idioma. Hasta 24 caracteres, sin acentos.": "Empty uses the language text. Up to 24 characters, no accents.",
+    "Teclas": "Keys",
+    "Siempre encendida": "Always on",
+    "Solo se apaga al bloquear y al suspender": "Only turns off on lock and suspend",
+    "Oscura al bloquear la pantalla": "Dark when the screen locks",
+    "Desplazar píxeles (protege el OLED)": "Shift pixels (protects the OLED)",
+    "Respuesta háptica": "Haptic feedback",
+    "Háptica también al soltar": "Haptics on release too",
+    "Sensibilidad del deslizamiento de volumen (px por paso)": "Volume swipe sensitivity (px per step)",
+    "Sensibilidad del deslizamiento de brillo (px por paso)": "Brightness swipe sensitivity (px per step)",
+    "Mantener para abrir el slider (ms)": "Hold to open the slider (ms)",
+    "Notificaciones en la barra": "Notifications on the bar",
+    "Sugerencias de escritura": "Typing suggestions",
+    "Canción nueva con la barra oscura": "New track on the dark bar",
+    "Zona de app (por defecto)": "App zone (default)",
+    "Se usa cuando ningún perfil de app coincide.": "Used when no app profile matches.",
+    "Control strip (derecha, fijo)": "Control strip (right, fixed)",
+    "Siempre visible, en todos los perfiles.": "Always visible, in every profile.",
+    "Formato (strftime, p. ej. %H:%M)": "Format (strftime, e.g. %H:%M)",
+    "Automática (GeoClue)": "Automatic (GeoClue)",
+    "Manual": "Manual",
+    "Latitud (respaldo o manual)": "Latitude (fallback or manual)",
+    "Longitud (respaldo o manual)": "Longitude (fallback or manual)",
+    "Actualizar cada (minutos)": "Refresh every (minutes)",
+    "Trabajo (minutos)": "Work (minutes)",
+    "Descanso (minutos)": "Break (minutes)",
+    "Visualizador animado": "Animated visualizer",
+    "Controles (volumen, brillo y luz del teclado)": "Controls (volume, brightness and keyboard light)",
+    "Vista previa": "Preview",
+    "Barra cerrada": "Closed bar",
+    "Al tocar «Controles»": "On tapping “Controls”",
+    "Volumen": "Volume",
+    "Brillo": "Brightness",
+    "Mostrar el slider de volumen": "Show the volume slider",
+    "Mostrar el slider de brillo": "Show the brightness slider",
+    "Mostrar el slider de luz del teclado": "Show the keyboard light slider",
+    "Columnas en blanco (de 12)": "Blank columns (of 12)",
+    "Probar notificación": "Test notification",
+    "Enviar aviso de prueba": "Send test notice",
+    "Aviso de prueba": "Test notice",
+    "Si lo ve en la barra, funciona": "If you see it on the bar, it works",
+    "Ancho del panel (px, 0 = toda la zona de app)": "Panel width (px, 0 = whole app zone)",
+    "Se cierra tras (ms sin tocar)": "Closes after (ms without touching)",
+    "Deje al menos un slider.": "Keep at least one slider.",
+    "Sin ítems: use «Agregar».": "No items: use “Add”.",
+    "Predeterminado": "Default",
+    "Paleta": "Palette",
+    "Agregar a:": "Add to:",
+    "Zona de app": "App zone",
+    "Strip fijo": "Fixed strip",
+    "Tecla personalizada…": "Custom key…",
+    "Aplicación…": "Application…",
+    "Inspector": "Inspector",
+    "Elija un ítem de la barra.": "Pick an item on the bar.",
+    "Mover a la izquierda": "Move left",
+    "Mover a la derecha": "Move right",
+    "Editar": "Edit",
+    "Quitar": "Remove",
+    "Apariencia": "Appearance",
+    "Monocromo": "Monochrome",
+    "Color completo": "Full color",
+    "Perfil": "Profile",
+    "Nombre del perfil": "Profile name",
+    "Idioma de la barra y la app": "Bar and app language",
+    "Automático": "Automatic",
+    "Idiomas de sugerencias (ej. es_CL,en_US)": "Suggestion languages (e.g. es_CL,en_US)",
+    "Reinicie la app para cambiar su idioma.": "Restart the app to change its language.",
+    "Diccionario no instalado: ": "Dictionary not installed: ",
+    "El daemon rechazó la configuración.": "The daemon rejected the configuration.",
+    "La etiqueta debe tener 1 a 12 caracteres ASCII (o elegir un ícono).": "The label must be 1 to 12 ASCII characters (or pick an icon).",
+    "La etiqueta debe tener 1 a 12 caracteres ASCII.": "The label must be 1 to 12 ASCII characters.",
+    "Indique exactamente un atajo o un comando.": "Give exactly one shortcut or one command.",
+    "No hay espacio libre en la barra.": "There is no free space on the bar.",
+    "Esas columnas están ocupadas.": "Those columns are taken.",
+    "Columna": "Column",
+    "Ancho (columnas)": "Width (columns)",
+    "Artista - Título": "Artist - Title",
+    "Se reacomodaron elementos para caber en 24 columnas.": "Items were rearranged to fit in 24 columns.",
+    "El elemento pasó a la zona de la app.": "The item moved to the app zone.",
+    "El elemento pasó al control strip.": "The item moved to the control strip.",
+    "Reducir": "Decrease",
+    "Aumentar": "Increase",
+    "Hasta 24 caracteres ASCII.": "Up to 24 ASCII characters.",
+    "Atenuar tras (segundos, 0 = nunca)": "Dim after (seconds, 0 = never)",
+    "¿Quitar el perfil?": "Remove the profile?",
+    "Etiqueta (ASCII, 1–12)": "Label (ASCII, 1-12)",
+    "Etiqueta": "Label",
+    "Atajo o comando": "Shortcut or command",
+    "Guardado, pero el servicio no se reinició: ": "Saved, but the service did not restart: ",
+    "Guardado, pero no se cambió el diccionario de sugerencias: ": "Saved, but the suggestions dictionary was not changed: ",
+    "Archivo dañado, se cargó la plantilla: ": "Damaged file, the template was loaded: ",
+    "No se pudo guardar: ": "Could not save: ",
+}
+
+
+def _(text):
+    return EN.get(text, text) if LANG == "en" else text
+
+
+TYPE_LABELS = {
+    "brightness": _("Brillo de pantalla"),
+    "keyboard_light": _("Luz del teclado"),
+    "playback": _("Reproducción (anterior, pausa, siguiente)"),
+    "volume": _("Volumen y micrófono"),
+    "key": _("Tecla personalizada"),
+    "screenshot": _("Captura de pantalla"),
+    "toggle": _("Interruptor"),
+    "controls": _("Controles (volumen, brillo y luz del teclado)"),
+    "now_playing": _("Canción actual"),
+    "clock": _("Reloj"),
+    "weather": _("Clima"),
+    "battery": _("Batería"),
+    "cpu": _("CPU"),
+    "memory": _("Memoria"),
+    "temperature": _("Temperatura"),
+    "fan": _("Ventilador"),
+    "network": _("Red"),
+    "next_event": _("Próximo evento"),
+    "pomodoro": _("Pomodoro"),
+    "emoji": _("Emojis"),
+    "windows": _("Ventanas"),
+    "spacer": _("Espacio"),
+}
+TOGGLES = {
+    "dnd": _("No molestar"),
+    "night_light": _("Luz nocturna"),
+    "caffeine": _("Cafeína"),
+    "wifi": _("Wi-Fi"),
+    "bluetooth": _("Bluetooth"),
+}
+
+
+# --- TOML ----------------------------------------------------------------
+
+def tv(value):
+    """One TOML value on a single line."""
+    if value is None:
+        raise ValueError("null value in the settings")
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[ " + ", ".join(tv(v) for v in value) + " ]" if value else "[]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{k} = {tv(v)}" for k, v in value.items()) + " }"
+    raise ValueError(f"unsupported value {value!r}")
+
+
+def dump_flat(data, header=""):
+    lines = [header] if header else []
+    lines += [f"{key} = {tv(value)}" for key, value in data.items()]
+    return "\n".join(lines) + "\n"
+
+
+def dump_layout(data):
+    out = [
+        "# Touch Bar Plus: disposición. Generado por la app «Touch Bar Plus».",
+        f"strip = {tv(data['strip'])}",
+        f"default = {tv(data['default'])}",
+    ]
+    for profile in data.get("profile", []):
+        out += [
+            "",
+            "[[profile]]",
+            f"name = {tv(profile['name'])}",
+            f"apps = {tv(profile.get('apps', []))}",
+            f"items = {tv(profile.get('items', []))}",
+        ]
+    for table in ("clock", "weather", "pomodoro", "now_playing", "controls"):
+        out += ["", f"[{table}]"] + [f"{k} = {tv(v)}" for k, v in data[table].items()]
+    out += ["", "[emoji]", f"favorites = {tv(data['emoji'].get('favorites', []))}"]
+    return "\n".join(out) + "\n"
+
+
+def dump_keys(keys):
+    out = ["# Teclas personales de la tercera fila. Generado por «Touch Bar Plus»."]
+    for key in keys:
+        # The daemon only accepts these three fields in keys.toml.
+        out += ["", "[[key]]"] + [f"{k} = {tv(v)}" for k, v in key.items() if k in ("label", "send", "run")]
+    return "\n".join(out) + "\n"
+
+
+def asset(name):
+    for base in (ROOT.parent / "daemon", ROOT / "share", HOME / ".local/share/touchbar-plus"):
+        if (base / name).exists():
+            return base / name
+    raise FileNotFoundError(name)
+
+
+def read_toml(path, fallback=None, problems=None):
+    """TOML file as a dict. Missing or broken files give the template (or {}); a broken one is reported in `problems`."""
+    try:
+        return tomllib.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        if problems is None:
+            raise
+        problems.append(f"{Path(path).name}: {error}")
+    return tomllib.loads(asset(fallback).read_text(encoding="utf-8")) if fallback else {}
+
+
+def load_state(problems=None):
+    layout = read_toml(CONFIG_DIR / "layout.toml", "layout-template.toml", problems)
+    template = tomllib.loads(asset("layout-template.toml").read_text(encoding="utf-8"))
+    for key in ("strip", "default"):
+        layout.setdefault(key, template[key])
+    for table in ("clock", "weather", "pomodoro", "now_playing", "controls"):
+        if not isinstance(layout.get(table), dict):
+            layout[table] = {}
+        for key, value in template[table].items():
+            layout[table].setdefault(key, value)
+    if not isinstance(layout.get("emoji"), dict):
+        layout["emoji"] = {}
+    layout["emoji"].setdefault("favorites", [])  # a bare [emoji] means no favorites
+    layout.setdefault("profile", [])
+    keys_path = CONFIG_DIR / "keys.toml"
+    keys_path = keys_path if keys_path.exists() else LEGACY_KEYS
+    return {
+        "suggest_langs": get_suggest_langs(),
+        "config": read_toml(CONFIG_DIR / "config.toml", "config-template.toml", problems),
+        "layout": layout,
+        "keys": read_toml(keys_path, None, problems).get("key", []),
+    }
+
+
+BOOSTER = "org.freedesktop.ibus.engine.typing-booster:/org/freedesktop/ibus/engine/typing-booster/"
+
+
+def get_suggest_langs():
+    try:
+        out = subprocess.run(["gsettings", "get", BOOSTER, "dictionary"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.strip().strip("'")
+
+
+def check_suggest_langs(value):
+    """Error text for dictionaries that are not installed, or None."""
+    for code in (c.strip() for c in value.split(",") if c.strip()):
+        if not any((Path(d) / f"{code}.dic").exists() for d in ("/usr/share/hunspell", "/usr/share/myspell")):
+            return _("Diccionario no instalado: ") + code
+    return None
+
+
+def validate_key_entry(entry):
+    """Returns an error text for a personal key or None."""
+    label = entry.get("label", "")
+    if not entry.get("icon") and not (1 <= len(label) <= 12 and label.isascii()):
+        return _("La etiqueta debe tener 1 a 12 caracteres ASCII (o elegir un ícono).")
+    if label and (len(label) > 12 or not label.isascii()):
+        return _("La etiqueta debe tener 1 a 12 caracteres ASCII.")
+    if bool(entry.get("send")) == bool(entry.get("run")):
+        return _("Indique exactamente un atajo o un comando.")
+    return None
+
+
+def save_state(state):
+    """Writes through temporary files, checks them with the daemon and only
+    then replaces the live ones. Returns an error text or None."""
+    langs = state.get("suggest_langs", "")
+    if langs != get_suggest_langs():  # only a changed value needs its dictionaries installed
+        problem = check_suggest_langs(langs)
+        if problem:
+            return problem
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    targets = {
+        "config.toml": dump_flat(state["config"], "# Touch Bar Plus. Generado por la app «Touch Bar Plus»."),
+        "layout.toml": dump_layout(state["layout"]),
+        "keys.toml": dump_keys(state["keys"]),
+    }
+    temps = {}
+    try:
+        for name, body in targets.items():
+            temp = CONFIG_DIR / f"{name}.new.{os.getpid()}"
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temps[name] = temp
+        env = dict(
+            os.environ,
+            KAIT2EN_TOUCHBAR_CONFIG=str(temps["config.toml"]),
+            KAIT2EN_TOUCHBAR_LAYOUT=str(temps["layout.toml"]),
+            KAIT2EN_TOUCHBAR_KEYS=str(temps["keys.toml"]),
+        )
+        result = subprocess.run([str(DAEMON), "--check-config"], env=env, capture_output=True, text=True, timeout=20)
+        output = (result.stdout + result.stderr).strip()
+        if result.returncode != 0 or output != "ok":
+            return output or _("El daemon rechazó la configuración.")
+        for name, temp in temps.items():
+            os.replace(temp, CONFIG_DIR / name)
+        temps = {}
+        warnings = []
+        if langs != get_suggest_langs():
+            booster = subprocess.run(["gsettings", "set", BOOSTER, "dictionary", langs], capture_output=True, text=True, timeout=10)
+            if booster.returncode != 0:
+                warnings.append(_("Guardado, pero no se cambió el diccionario de sugerencias: ") + (booster.stderr or booster.stdout).strip())
+        restart = subprocess.run(["systemctl", "--user", "restart", SERVICE], capture_output=True, text=True, timeout=30)
+        if restart.returncode != 0:
+            warnings.append(_("Guardado, pero el servicio no se reinició: ") + ((restart.stderr or restart.stdout).strip() or f"código {restart.returncode}"))
+        return " ".join(warnings) or None
+    except (OSError, subprocess.SubprocessError) as error:
+        return str(error)
+    finally:
+        for temp in temps.values():
+            temp.unlink(missing_ok=True)
+
+
+def restore_defaults():
+    for name in ("config.toml", "layout.toml"):
+        (CONFIG_DIR / name).unlink(missing_ok=True)
+    subprocess.run(["systemctl", "--user", "restart", SERVICE], check=False, capture_output=True, timeout=30)
+
+
+def icon_dir():
+    for base in (ROOT.parent / "daemon/icons/lucide", HOME / ".local/share/touchbar-plus/icons/lucide"):
+        if base.is_dir():
+            return base
+    return None
+
+
+# --- Qt Quick UI -----------------------------------------------------------
+
+def desktop_apps():
+    """Installed applications as [{id, name}], read from the .desktop files."""
+    found = {}
+    data_home = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share"))
+    # XDG precedence, like AppIcons.load: the user's directory first, then the system ones; the first file wins.
+    dirs = [data_home] + [Path(d) for d in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")]
+    for base in dirs:
+        for path in (base / "applications").glob("*.desktop"):
+            name, hidden = None, False
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith("[") and line.strip() != "[Desktop Entry]":
+                        break
+                    if line.startswith("Name=") and name is None:
+                        name = line[5:].strip()
+                    elif line.strip() in ("NoDisplay=true", "Hidden=true"):
+                        hidden = True
+            except OSError:
+                continue
+            if name and not hidden:
+                found.setdefault(path.name, name)
+    return sorted(({"id": k, "name": v} for k, v in found.items()), key=lambda a: a["name"].lower())
+
+
+def main():
+    from PyQt6.QtCore import QByteArray, QObject, QSize, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+    from PyQt6.QtGui import QColor, QGuiApplication, QImage, QPainter
+    from PyQt6.QtQml import QQmlApplicationEngine
+    from PyQt6.QtQuick import QQuickImageProvider
+    from PyQt6.QtSvg import QSvgRenderer
+
+    directory = icon_dir()
+
+    class Lucide(QQuickImageProvider):
+        """image://lucide/<name>/<rrggbb>: a Lucide icon in the given color."""
+
+        def __init__(self):
+            super().__init__(QQuickImageProvider.ImageType.Image)
+            self.cache = {}
+
+        def requestImage(self, ident, requested):
+            name, _sep, color = ident.partition("/")
+            if "/" in name or ".." in name or "\\" in name:  # never leave the icon directory
+                name = ""
+            side = max(requested.width(), 24) if requested.isValid() else 24
+            key = (name, color, side)
+            if key not in self.cache:
+                image = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
+                image.fill(Qt.GlobalColor.transparent)
+                path = directory / f"{name}.svg" if directory else None
+                if path and path.exists():
+                    svg = path.read_text(encoding="utf-8").replace("currentColor", "#" + (color or "dce6ff"))
+                    painter = QPainter(image)
+                    QSvgRenderer(QByteArray(svg.encode())).render(painter)
+                    painter.end()
+                self.cache[key] = image
+            image = self.cache[key]
+            return image, image.size()
+
+    class AppIcons(QQuickImageProvider):
+        """image://appicon/<id>.desktop: the real icon of an application."""
+
+        def __init__(self):
+            super().__init__(QQuickImageProvider.ImageType.Image)
+            self.cache = {}
+
+        def requestImage(self, ident, requested):
+            side = max(requested.width(), 24) if requested.isValid() else 48
+            if not ident.endswith(".desktop") or "/" in ident or " " in ident:
+                ident = ""
+            key = (ident, side)
+            if key not in self.cache:
+                self.cache[key] = self.load(ident, side)
+            image = self.cache[key]
+            return image, image.size()
+
+        @staticmethod
+        def find(name, side, dirs):
+            """File of a themed icon: the smallest hicolor size that is at least `side`, else the largest."""
+            found = []
+            for base in dirs:
+                for path in (base / "icons/hicolor").glob(f"*/apps/{name}.*"):
+                    size = path.parent.parent.name.split("@")[0].split("x")[0]
+                    found.append((10_000 if size == "scalable" else int(size) if size.isdigit() else 0, str(path)))
+                found += [(0, str(p)) for p in (base / "pixmaps").glob(f"{name}.*")]
+            fit = sorted(f for f in found if f[0] >= side)
+            return (fit[0] if fit else max(found, default=(0, "")))[1]
+
+        @staticmethod
+        def load(ident, side):
+            from PyQt6.QtGui import QIcon
+            name = ""
+            data_home = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share"))
+            dirs = [data_home] + [Path(d) for d in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":")]
+            for base in dirs if ident else []:
+                try:
+                    for line in (base / "applications" / ident).read_text(encoding="utf-8", errors="replace").splitlines():
+                        if line.startswith("Icon="):
+                            name = line[5:].strip()
+                            break
+                except OSError:
+                    continue
+                if name:
+                    break
+            icon = QIcon(name) if name.startswith("/") else QIcon.fromTheme(name or "application-x-executable")
+            if icon.isNull() and name:
+                icon = QIcon(AppIcons.find(name, side, dirs))
+            pixmap = icon.pixmap(side, side)
+            image = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+            if image.isNull():
+                image = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
+                image.fill(Qt.GlobalColor.transparent)
+            return image
+
+    class Backend(QObject):
+        previewReady = pyqtSignal(str)
+
+        def __init__(self):
+            super().__init__()
+            self.preview_count = 0
+            self.preview_lock = threading.Lock()
+
+        @pyqtSlot(result=str)
+        def load(self):
+            problems = []
+            try:
+                state = load_state(problems)
+            except Exception as error:
+                # Never leave the window empty: fall back to the templates and say why.
+                problems.append(str(error))
+                state = {"suggest_langs": "", "config": read_toml(asset("config-template.toml")),
+                         "layout": read_toml(asset("layout-template.toml")), "keys": []}
+            return json.dumps({
+                "state": state,
+                "problem": (_("Archivo dañado, se cargó la plantilla: ") + "; ".join(problems)) if problems else "",
+                "meta": {
+                    "lang": LANG,
+                    "types": TYPE_LABELS,
+                    "toggles": TOGGLES,
+                    "icons": sorted(p.stem for p in directory.glob("*.svg")) if directory else [],
+                },
+            })
+
+        @pyqtSlot(str, result=str)
+        def tr(self, text):
+            return _(text)
+
+        @pyqtSlot(str, result=str)
+        def save(self, body):
+            try:
+                return save_state(json.loads(body)) or ""
+            except Exception as error:
+                return _("No se pudo guardar: ") + str(error)
+
+        @pyqtSlot(str, result=str)
+        def validateKey(self, body):
+            try:
+                return validate_key_entry(json.loads(body)) or ""
+            except Exception as error:
+                return str(error)
+
+        @pyqtSlot(result=str)
+        def restore(self):
+            try:
+                restore_defaults()
+            except Exception as error:
+                print(error, file=sys.stderr)
+            return self.load()
+
+        @pyqtSlot(result=str)
+        def apps(self):
+            try:
+                return json.dumps(desktop_apps())
+            except Exception as error:
+                print(error, file=sys.stderr)
+                return "[]"
+
+        @pyqtSlot(str)
+        def touchIdPreview(self, body):
+            """Renders the Touch ID prompt (six looks, four states) off the GUI thread; the result arrives as previewReady(json)."""
+            self.preview_count += 1
+            threading.Thread(target=self._render_preview, args=(body, self.preview_count), daemon=True).start()
+
+        def _render_preview(self, body, seq):
+            with self.preview_lock:
+                if seq != self.preview_count:  # a newer request replaced this one
+                    return
+                try:
+                    cache = HOME / ".cache/touchbar-plus"
+                    cache.mkdir(parents=True, exist_ok=True)
+                    prefix = cache / f"tid{seq}"
+                    config = cache / "preview-config.toml"
+                    config.write_text(dump_flat(json.loads(body)), encoding="utf-8")
+                    result = subprocess.run([str(DAEMON), "--snapshot-touchid", str(prefix)], capture_output=True, text=True,
+                                            timeout=20, env=dict(os.environ, KAIT2EN_TOUCHBAR_CONFIG=str(config)))
+                    if result.returncode != 0:
+                        answer = {"error": (result.stderr or result.stdout).strip()}
+                    else:
+                        for old in cache.glob("tid*-*.png"):
+                            if not old.name.startswith(f"tid{seq}-"):
+                                old.unlink(missing_ok=True)
+                        answer = {"prefix": str(prefix), "url": QUrl.fromLocalFile(str(prefix)).toString()}
+                except Exception as error:
+                    answer = {"error": str(error)}
+            answer["seq"] = seq
+            self.previewReady.emit(json.dumps(answer))
+
+        @pyqtSlot(result=str)
+        def testNotice(self):
+            try:
+                subprocess.run(["notify-send", "-a", "Touch Bar Plus", _("Aviso de prueba"), _("Si lo ve en la barra, funciona")],
+                               check=True, capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.SubprocessError) as error:
+                return str(getattr(error, "stderr", "") or error)
+            return ""
+
+    os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
+    app = QGuiApplication(sys.argv)
+    app.setApplicationName("Touch Bar Plus")
+    app.setDesktopFileName("org.kait2en.TouchbarPlus")
+    engine = QQmlApplicationEngine()
+    provider, backend = Lucide(), Backend()
+    engine.addImageProvider("lucide", provider)
+    engine.addImageProvider("appicon", AppIcons())
+    engine.rootContext().setContextProperty("backend", backend)
+    qml = Path(os.environ.get("TBP_QML") or next((b / "qml" for b in (ROOT, HOME / ".local/share/touchbar-plus") if (b / "qml/Main.qml").exists()), ROOT / "qml"))
+    engine.addImportPath(str(qml))
+    engine.warnings.connect(lambda items: [print(item.toString(), file=sys.stderr) for item in items])
+    engine.load(QUrl.fromLocalFile(str(qml / "Main.qml")))
+    if not engine.rootObjects():
+        return 1
+    window = engine.rootObjects()[0]
+    prefix = os.environ.get("TBP_SHOT")
+    if prefix:
+        pages = ["barra", "general", "widgets", "teclas", "touchid"]
+
+        def shoot():
+            if not pages:
+                app.quit()
+                return
+            name = pages.pop(0)
+            window.setProperty("page", ["barra", "general", "widgets", "teclas", "touchid"].index(name))
+            QTimer.singleShot(700, lambda: (window.grabWindow().save(f"{prefix}-{name}.png"), shoot()))
+
+        QTimer.singleShot(1500, shoot)
+    elif os.environ.get("TBP_SCRIPT"):
+        # Development hook: runs a script with the live window, e.g. to simulate drags.
+        code = Path(os.environ["TBP_SCRIPT"]).read_text(encoding="utf-8")
+        QTimer.singleShot(1500, lambda: exec(code, {"app": app, "window": window, "QTimer": QTimer}))
+    elif os.environ.get("TBP_SMOKE"):
+        QTimer.singleShot(2000, app.quit)
+    code = app.exec()
+    # Tear the QML tree down while the backend still exists, or its bindings log errors.
+    engine.deleteLater()
+    app.sendPostedEvents(None, 52)  # QEvent.Type.DeferredDelete
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
