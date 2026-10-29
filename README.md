@@ -12,6 +12,16 @@ Fork del daemon `t2-touchbar` de KaiT2en (`daemon/`), una extensión de GNOME Sh
 - Configuración: `~/.config/kait2en-touchbar-plus/{config,layout,keys}.toml`, o la app «Touch Bar Plus».
 - Validar sin reiniciar: `~/.local/bin/kait2en-touchbar-plus --check-config`.
 
+## La app de ajustes
+
+| Barra | General |
+|---|---|
+| ![Barra](docs/capturas/barra.png) | ![General](docs/capturas/general.png) |
+| **Widgets** | **Touch ID** |
+| ![Widgets](docs/capturas/widgets.png) | ![Touch ID](docs/capturas/touchid.png) |
+
+![Teclas](docs/capturas/teclas.png)
+
 ## Actualizar cuando KaiT2en cambie
 
     diff -ru /usr/local/src/KaiT2en-Fedora/apps/t2-touchbar daemon
