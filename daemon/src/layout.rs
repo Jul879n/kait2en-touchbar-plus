@@ -121,6 +121,8 @@ pub enum ItemKind {
     Pomodoro,
     Emoji,
     Windows,
+    /// Opens a row with the running apps; a touch focuses one.
+    Apps,
     /// Blank columns of the grid.
     Spacer,
     /// One button that opens the volume, brightness and keyboard sliders.
@@ -159,10 +161,8 @@ pub enum TransientAction {
     Dialog(usize),
     /// Text only: the title of a dialog.
     Label,
-    /// Index into the apps of the open Super+Tab switcher.
+    /// Index into the apps of the open apps row.
     SwitchApp(usize),
-    /// A window of the selected app in the switcher.
-    SwitchWindow(u32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -516,6 +516,7 @@ fn kind(raw: ItemRaw) -> Result<ItemKind> {
         "pomodoro" => simple(ItemKind::Pomodoro),
         "emoji" => simple(ItemKind::Emoji),
         "windows" => simple(ItemKind::Windows),
+        "apps" => simple(ItemKind::Apps),
         "spacer" => simple(ItemKind::Spacer),
         "controls" => simple(ItemKind::Controls),
         "toggle" => {

@@ -121,6 +121,11 @@ const PENDING_CARD_POLL_MS: u64 = 500;
 const PROMPT_PERIOD_MS: u64 = 1_800;
 const PROMPT_FRAME_MS: u64 = 33;
 const MEDIA_HOLD_MS: u64 = 450;
+const CAFFEINE_HOLD_MS: u64 = 3000;
+/// A tap on the finger each second tells that the hold is counting.
+const CAFFEINE_PULSE_MS: u64 = 1000;
+/// The fill of the key redraws this often while held.
+const CAFFEINE_FRAME_MS: u64 = 50;
 const SEEK_INTERVAL_MS: u64 = 250;
 /// Seek steps grow after this long, so long distances stay quick.
 const SEEK_FAST_AFTER_MS: u64 = 1_500;
@@ -175,6 +180,9 @@ enum Contact {
     /// Pomodoro key: a tap pauses or starts, a long hold resets. Holds the
     /// touch time.
     PomoHold(usize, u64),
+    /// Caffeine key: acts only once held for `CAFFEINE_HOLD_MS`, so a stray
+    /// touch never changes it.
+    CaffeineHold,
     /// A key of the track overlay on the dark bar; `true` is next.
     TrackKey(bool),
 }
@@ -228,6 +236,8 @@ struct EscapeFade {
 /// The open controls panel: one slider per configured control.
 struct Panel {
     levels: [Option<u32>; 3],
+    /// The sound is muted: the volume icon shows it and taps flip it.
+    muted: bool,
     active: Option<usize>,
     until_ms: u64,
     last_set_ms: u64,
@@ -249,47 +259,35 @@ fn close_key() -> ItemKind {
     })
 }
 
-/// The apps of Super+Tab, mirrored on the bar while the keys are held.
+/// Running apps shown by the apps button, most recent first.
 struct Switcher {
     apps: shell::AppList,
-    selected: usize,
 }
 
-/// The app icons around the selected one, then its name and windows.
+/// One icon per running app; a touch focuses its latest window.
 fn switcher_row(switcher: &Switcher) -> Vec<ItemKind> {
-    let count = switcher.apps.len();
-    let first = switcher.selected.saturating_sub(SWITCHER_APPS / 2).min(count.saturating_sub(SWITCHER_APPS));
     let key = |glyph, action| ItemKind::Transient(layout::TransientKey { glyph, action });
-    let mut items = Vec::new();
-    for (index, (id, name, _)) in switcher.apps.iter().enumerate().skip(first).take(SWITCHER_APPS) {
-        let chosen = index == switcher.selected;
-        let glyph = match apps::icon_path(id) {
-            Some(path) => layout::TransientGlyph::App(layout::intern(&path.to_string_lossy()), chosen),
-            None => {
-                let initial: String = fold_ascii(name).chars().take(1).collect::<String>().to_uppercase();
-                let tone = if chosen { layout::DialogTone::Accent } else { layout::DialogTone::Neutral };
-                layout::TransientGlyph::Tone(layout::intern(&initial), tone)
-            }
-        };
-        items.push(key(glyph, layout::TransientAction::SwitchApp(index)));
-    }
-    let (_, name, windows) = &switcher.apps[switcher.selected];
-    items.push(key(
-        layout::TransientGlyph::Tone(layout::intern(&ascii_label(name)), layout::DialogTone::Title),
-        layout::TransientAction::Label,
-    ));
-    for (id, title) in windows.iter().take(SWITCHER_WINDOWS) {
-        items.push(key(
-            layout::TransientGlyph::Text(layout::intern(&ascii_label(title))),
-            layout::TransientAction::SwitchWindow(*id),
-        ));
-    }
-    items
+    switcher
+        .apps
+        .iter()
+        .enumerate()
+        .take(SWITCHER_APPS)
+        .map(|(index, (id, name, _))| {
+            let glyph = match apps::icon_path(id) {
+                Some(path) => layout::TransientGlyph::App(layout::intern(&path.to_string_lossy()), false),
+                None => {
+                    let initial: String = fold_ascii(name).chars().take(1).collect::<String>().to_uppercase();
+                    layout::TransientGlyph::Tone(layout::intern(&initial), layout::DialogTone::Neutral)
+                }
+            };
+            key(glyph, layout::TransientAction::SwitchApp(index))
+        })
+        .chain(std::iter::once(close_key()))
+        .collect()
 }
 
-/// Widest the app icons go before the list slides around the selection.
-const SWITCHER_APPS: usize = 7;
-const SWITCHER_WINDOWS: usize = 2;
+/// Widest the app icons go.
+const SWITCHER_APPS: usize = 10;
 
 /// A dialog keeps its row until the app closes it.
 const DIALOG_HOLD_MS: u64 = 3_600_000;
@@ -535,11 +533,7 @@ struct Runtime {
     /// Dialog of the focused window shown as the bar's row, and the switch
     /// that lets its poller run while the bar is lit.
     switcher: Option<Switcher>,
-    /// Super or Alt keys held, Shift held, Tabs waiting for the app list,
-    /// and until when the Tabs we inject ourselves are not counted.
-    switch_mods: u8,
-    shift_held: u8,
-    switch_steps: i32,
+    /// The apps button was pressed and the list is on its way.
     switch_wanted: bool,
         dialog: Option<atspi::Dialog>,
     dialog_poll: Arc<AtomicBool>,
@@ -548,6 +542,9 @@ struct Runtime {
     pomo_next_ms: Option<u64>,
     windows_missing_until_ms: Option<u64>,
     slider_hold: Option<SliderHold>,
+    /// Finger held on the caffeine key: slot, key index, touch time and the
+    /// next frame of the progress bar and the second last pulsed.
+    caffeine_due: Option<(u32, usize, u64, u64, u8)>,
     /// The level overlay covers the lit bar.
     slider_shown: bool,
     player: Option<mpris::PlayerInfo>,
@@ -698,9 +695,6 @@ impl Runtime {
             pending_card_ms: None,
             transient: None,
             switcher: None,
-            switch_mods: 0,
-            shift_held: 0,
-            switch_steps: 0,
             switch_wanted: false,
                         dialog: None,
             dialog_poll: Arc::new(AtomicBool::new(false)),
@@ -709,6 +703,7 @@ impl Runtime {
             pomo_next_ms: None,
             windows_missing_until_ms: None,
             slider_hold: None,
+            caffeine_due: None,
             slider_shown: false,
             player: None,
             position_us: 0,
@@ -794,7 +789,11 @@ impl Runtime {
                     .items
                     .iter()
                     .map(|control| widgets::PanelRow {
-                        icon: control.icon(),
+                        icon: if *control == layout::Control::Volume && panel.muted {
+                            "volume-x"
+                        } else {
+                            control.icon()
+                        },
                         percent: panel.levels[control.index()],
                     })
                     .collect(),
@@ -848,6 +847,7 @@ impl Runtime {
         }
         self.panel = Some(Panel {
             levels,
+            muted: levels::volume().muted,
             active: None,
             until_ms: now + self.plus.controls.timeout_ms,
             last_set_ms: 0,
@@ -863,6 +863,16 @@ impl Runtime {
         renderer::panel_hit(self.panel_zone, self.plus.controls.items.len(), x)
     }
 
+    /// A touch on the icon of the volume slider, left of its bar.
+    fn panel_icon_hit(&self, slider: usize, x: f64) -> bool {
+        let count = self.plus.controls.items.len();
+        if self.plus.controls.items.get(slider) != Some(&layout::Control::Volume) {
+            return false;
+        }
+        let (left, right) = renderer::panel_slice(self.panel_zone, count, slider);
+        x < f64::from(renderer::panel_bar(left, right).0)
+    }
+
     fn panel_set(&mut self, slider: usize, level: u32, now: u64, force: bool) -> Result<()> {
         let Some(control) = self.plus.controls.items.get(slider).copied() else {
             return Ok(());
@@ -874,6 +884,10 @@ impl Runtime {
         panel.until_ms = now + self.plus.controls.timeout_ms;
         let changed = panel.levels[control.index()] != Some(level);
         panel.levels[control.index()] = Some(level);
+        // Moving the volume unmutes, as the worker does.
+        if control == layout::Control::Volume && changed && level > 0 {
+            panel.muted = false;
+        }
         if changed && (force || now.saturating_sub(panel.last_set_ms) >= 40) {
             panel.last_set_ms = now;
             levels::set_control(control, level);
@@ -1088,6 +1102,8 @@ impl Runtime {
     }
 
     fn clear_touches(&mut self) {
+        self.caffeine_due = None;
+        self.canvas.hold_progress = None;
         self.contacts.clear();
         self.positions.clear();
         self.pending = None;
@@ -1098,13 +1114,33 @@ impl Runtime {
     fn touch_down(&mut self, slot: u32, x: f64, y: f64) -> Result<()> {
         let now = self.now_ms();
         self.touch_dim(now);
-        if self.visible && self.toast.as_ref().is_some_and(|toast| toast.notice) {
-            // A message over the keys: the touch only dismisses it.
-            self.toast = None;
+        if self.toast.as_ref().is_some_and(|toast| toast.notice) {
+            // A touch on a message takes the user to the app that sent it.
+            let app = self
+                .toast
+                .as_ref()
+                .and_then(|toast| toast.card.as_ref())
+                .map(|card| card.app.clone())
+                .filter(|app| !app.is_empty());
+            if let Some(app) = app {
+                std::thread::spawn(move || shell::focus_app(&app));
+            }
             self.contacts.insert(slot, Contact::Cancelled);
-            return self.present_keys();
+            return self.toast_done();
         }
         if let Some((slider, level)) = self.panel_touch(x, y) {
+            if self.panel_icon_hit(slider, x) {
+                // The icon of the volume slider is the mute button.
+                levels::toggle_mute();
+                self.haptic.click();
+                self.contacts.insert(slot, Contact::Cancelled);
+                self.touches_armed = true;
+                if let Some(panel) = self.panel.as_mut() {
+                    panel.muted = !panel.muted;
+                    panel.until_ms = now + self.plus.controls.timeout_ms;
+                }
+                return self.refresh_widgets();
+            }
             self.contacts.insert(slot, Contact::Panel(slider));
             self.touches_armed = true;
             return self.panel_set(slider, level, now, true);
@@ -1316,6 +1352,15 @@ impl Runtime {
                 });
                 Ok(())
             }
+            Some(index) if self.is_caffeine(index) => {
+                let touched = pending.deadline_ms - self.config.two_finger_window_ms;
+                self.contacts
+                    .insert(pending.slot, Contact::CaffeineHold);
+                self.caffeine_due = Some((pending.slot, index, touched, now + CAFFEINE_FRAME_MS, 0));
+                self.canvas.hold_progress = Some((index, 0.0));
+                eprintln!("kait2en-touchbar-plus: caffeine hold armed");
+                Ok(())
+            }
             Some(index)
                 if matches!(
                     self.layout.buttons[index].action,
@@ -1472,7 +1517,13 @@ impl Runtime {
         let card = toast.card.clone().expect("a card toast has its card");
         let old = toast.replaced.as_ref().map(|(old, _)| old.clone());
         let motion = renderer::NoticeMotion { enter, leave, remain, swap };
-        self.canvas.notice_card(&card, old.as_ref(), motion);
+        let keep_strip = self.visible && self.state.mode == Mode::Media;
+        let zone_right = if keep_strip {
+            f32::from(self.layout.zone.1)
+        } else {
+            f32::from(self.layout.zone.1.max(self.canvas.width / 2))
+        };
+        self.canvas.notice_card(&card, old.as_ref(), motion, zone_right, keep_strip);
         self.present_overlay()
     }
 
@@ -2331,6 +2382,15 @@ impl Runtime {
                     shell::list_windows(bus.clone());
                 }
             }
+            ItemKind::Apps => {
+                if self.switcher.is_some() {
+                    return self.switcher_close();
+                }
+                if let Some(bus) = &self.bus {
+                    self.switch_wanted = true;
+                    shell::list_apps(bus.clone());
+                }
+            }
             ItemKind::Transient(key) => self.transient_pressed(key.action, now)?,
             _ => {}
         }
@@ -2341,6 +2401,8 @@ impl Runtime {
     const WINDOWS_PER_PAGE: usize = 8;
 
     fn close_transient(&mut self) -> Result<()> {
+        self.switcher = None;
+        self.switch_wanted = false;
         if self.transient.take().is_some() {
             self.refresh_widgets()?;
         }
@@ -2457,6 +2519,7 @@ impl Runtime {
                 }
             }
             A::Close => {
+                self.switcher = None;
                 self.transient = None;
                 self.restore_dialog_row(now);
             }
@@ -2467,61 +2530,12 @@ impl Runtime {
             }
             A::Label => {}
             A::SwitchApp(index) => self.switcher_pick(index, now)?,
-            A::SwitchWindow(id) => {
-                std::thread::spawn(move || shell::activate_window(id));
-            }
-        }
-        Ok(())
-    }
-
-    /// Follows Super/Alt+Tab: the shell switches the apps, the bar shows them.
-    fn switcher_key(&mut self, code: u32, pressed: bool) -> Result<()> {
-        if !self.config.app_switcher {
-            return Ok(());
-        }
-        let now = self.now_ms();
-        let is = |key: Key| code == key as u32;
-        // AltGr is not a switcher key. Shortcuts the compositor never receives
-        // (a VM or remote desktop grabbing them) can still desync the bar.
-        if is(Key::LeftMeta) || is(Key::RightMeta) || is(Key::LeftAlt) {
-            self.switch_mods = if pressed {
-                self.switch_mods.saturating_add(1)
-            } else {
-                self.switch_mods.saturating_sub(1)
-            };
-            if self.switch_mods == 0 {
-                self.switcher_close()?;
-            }
-        } else if is(Key::LeftShift) || is(Key::RightShift) {
-            self.shift_held = if pressed {
-                self.shift_held.saturating_add(1)
-            } else {
-                self.shift_held.saturating_sub(1)
-            };
-        } else if is(Key::Esc) && pressed {
-            self.switcher_close()?;
-        } else if is(Key::Tab) && pressed && self.switch_mods > 0 {
-            let step = if self.shift_held > 0 { -1 } else { 1 };
-            if let Some(switcher) = &mut self.switcher {
-                let count = switcher.apps.len() as i32;
-                switcher.selected = (switcher.selected as i32 + step).rem_euclid(count.max(1)) as usize;
-                self.show_switcher(now);
-                return self.refresh_widgets();
-            }
-            self.switch_steps += step;
-            if !self.switch_wanted {
-                self.switch_wanted = true;
-                if let Some(bus) = &self.bus {
-                    shell::list_apps(bus.clone());
-                }
-            }
         }
         Ok(())
     }
 
     fn switcher_close(&mut self) -> Result<()> {
         self.switch_wanted = false;
-        self.switch_steps = 0;
         if self.switcher.take().is_some() {
             self.transient = None;
             self.restore_dialog_row(self.now_ms());
@@ -2535,17 +2549,11 @@ impl Runtime {
         if !self.switch_wanted {
             return Ok(());
         }
-        // A failed list keeps the steps and asks again on the next Tab.
+        self.switch_wanted = false;
         let Some(apps) = apps.filter(|apps| !apps.is_empty()) else {
             return Ok(());
         };
-        self.switch_wanted = false;
-        let steps = std::mem::take(&mut self.switch_steps);
-        if self.switch_mods == 0 {
-            return Ok(());
-        }
-        let selected = steps.rem_euclid(apps.len() as i32) as usize;
-        self.switcher = Some(Switcher { apps, selected });
+        self.switcher = Some(Switcher { apps });
         self.show_switcher(now);
         self.refresh_widgets()
     }
@@ -2554,26 +2562,25 @@ impl Runtime {
         let Some(switcher) = &self.switcher else { return };
         self.transient = Some(Transient {
             items: switcher_row(switcher),
-            until_ms: now + DIALOG_HOLD_MS,
+            until_ms: now + TRANSIENT_IDLE_MS,
             windows: None,
         });
     }
 
-    /// A touch on an app: Tabs the shell's switcher to it (Super is still held).
+    /// A touch on an app: focuses its latest window and closes the row.
     fn switcher_pick(&mut self, index: usize, now: u64) -> Result<()> {
-        let Some(switcher) = &mut self.switcher else { return Ok(()) };
-        let count = switcher.apps.len() as i32;
-        let forward = (index as i32 - switcher.selected as i32).rem_euclid(count);
-        let (taps, keys): (i32, &[Key]) = if forward * 2 <= count {
-            (forward, &[Key::Tab])
-        } else {
-            (count - forward, &[Key::LeftShift, Key::Tab])
-        };
-        switcher.selected = index;
-        for _ in 0..taps {
-            self.keyboard.tap_combination(keys)?;
+        let window = self
+            .switcher
+            .as_ref()
+            .and_then(|switcher| switcher.apps.get(index))
+            .and_then(|(_, _, windows)| windows.first())
+            .map(|(id, _)| *id);
+        self.switcher = None;
+        self.transient = None;
+        self.restore_dialog_row(now);
+        if let Some(id) = window {
+            std::thread::spawn(move || shell::activate_window(id));
         }
-        self.show_switcher(now);
         self.refresh_widgets()
     }
 
@@ -2741,6 +2748,7 @@ impl Runtime {
             title: fold_ascii(text),
             body: fold_ascii(app),
             icon: renderer::NoticeIcon::Lucide("bell"),
+            app: String::new(),
         };
         self.show_card(card, now, false)
     }
@@ -2854,7 +2862,7 @@ impl Runtime {
         self.recent_notices.push_back((title.clone(), body.clone(), now));
         eprintln!("kait2en-touchbar-plus: notice from {app} ({} chars)", title.len() + body.len());
         let updating = replaces && self.toast.as_ref().is_some_and(|toast| toast.card.is_some());
-        self.show_card(renderer::NoticeCard { title, body, icon }, now, updating)
+        self.show_card(renderer::NoticeCard { title, body, icon, app }, now, updating)
     }
 
     fn transient_tick(&mut self, now: u64) -> Result<()> {
@@ -2871,6 +2879,43 @@ impl Runtime {
             self.refresh_widgets()?;
         }
         Ok(())
+    }
+
+    /// The caffeine key was held long enough: switches it while still held.
+    fn caffeine_hold_due(&mut self, now: u64) -> Result<()> {
+        let Some((slot, index, start, _, stage)) =
+            self.caffeine_due.take_if(|(_, _, _, due, _)| now >= *due)
+        else {
+            return Ok(());
+        };
+        let elapsed = now.saturating_sub(start);
+        if elapsed < CAFFEINE_HOLD_MS {
+            // Still counting: the key fills up, and a tap each second.
+            let second = (elapsed / CAFFEINE_PULSE_MS) as u8;
+            if second > stage {
+                self.haptic.click();
+            }
+            self.canvas.hold_progress = Some((index, elapsed as f32 / CAFFEINE_HOLD_MS as f32));
+            self.caffeine_due = Some((slot, index, start, now + CAFFEINE_FRAME_MS, second));
+            return self.present_keys();
+        }
+        eprintln!("kait2en-touchbar-plus: caffeine hold fired");
+        self.canvas.hold_progress = None;
+        self.contacts.insert(slot, Contact::Cancelled);
+        if let Action::Item(item) = self.layout.buttons[index].action {
+            self.item_pressed(item)?;
+        }
+        self.haptic.click();
+        self.active_button = None;
+        self.present_keys()
+    }
+
+    fn is_caffeine(&self, index: usize) -> bool {
+        matches!(
+            self.layout.buttons[index].action,
+            Action::Item(item)
+                if self.items.get(item) == Some(&ItemKind::Toggle(layout::Toggle::Caffeine))
+        )
     }
 
     fn press_button(&mut self, index: usize, now: u64) -> Result<()> {
@@ -3088,6 +3133,11 @@ impl Runtime {
                         self.overlay_hide_ms = Some(now + ESC_LINGER_MS);
                     } else if pending.dark {
                         self.wake(true)?;
+                    } else if pending.button.is_some_and(|index| self.is_caffeine(index)) {
+                        // A tap is not enough for caffeine: drop the highlight.
+                        eprintln!("kait2en-touchbar-plus: caffeine tap ignored");
+                        self.active_button = None;
+                        self.present_keys()?;
                     } else if let Some(index) = pending.button {
                         self.press_button(index, now)?;
                         self.keyboard.release()?;
@@ -3114,6 +3164,14 @@ impl Runtime {
                     panel.until_ms = now + self.plus.controls.timeout_ms;
                 }
                 self.refresh_widgets()?;
+            }
+            Some(Contact::CaffeineHold) => {
+                // Lifted before the time was up: nothing changes.
+                eprintln!("kait2en-touchbar-plus: caffeine released early");
+                self.caffeine_due = None;
+                self.canvas.hold_progress = None;
+                self.active_button = None;
+                self.present_keys()?;
             }
             Some(Contact::PomoHold(index, touched)) => {
                 if now.saturating_sub(touched) >= self.config.hold_slider_ms {
@@ -3438,6 +3496,7 @@ impl Runtime {
             self.activity_timeout();
         }
         self.slider_due(now)?;
+        self.caffeine_hold_due(now)?;
         self.panel_tick(now)?;
         self.transient_tick(now)?;
         self.pomodoro_tick(now)?;
@@ -3521,6 +3580,7 @@ impl Runtime {
         }
         deadlines.extend(self.dim_deadline_ms);
         deadlines.extend(self.slider_hold.as_ref().map(|hold| hold.due_ms));
+        deadlines.extend(self.caffeine_due.map(|(_, _, _, due, _)| due));
         deadlines.extend(self.transient.as_ref().map(|t| t.until_ms));
         deadlines.extend(self.windows_missing_until_ms);
         deadlines.extend(self.pomo_next_ms);
@@ -3715,7 +3775,6 @@ fn snapshot(path: &str) -> Result<()> {
             app("org.gnome.Ptyxis.desktop", "Terminal", &["ptyxis"]),
             app("org.mozilla.firefox.desktop", "Firefox", &["Inicio"]),
         ],
-        selected: 1,
     };
     let row = switcher_row(&switcher);
     let switcher_layout = Layout::from_placed(&row, &[], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
@@ -3728,14 +3787,15 @@ fn snapshot(path: &str) -> Result<()> {
         icon: renderer::NoticeIcon::App(layout::intern(
             &apps::icon_path("com.mitchellh.ghostty.desktop").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
         )),
+        app: String::new(),
     };
-    let next = renderer::NoticeCard { title: "New message".into(), body: "Ana: are we still on for lunch?".into(), icon: renderer::NoticeIcon::Lucide("bell") };
+    let next = renderer::NoticeCard { title: "New message".into(), body: "Ana: are we still on for lunch?".into(), icon: renderer::NoticeIcon::Lucide("bell"), app: String::new() };
     for (name, enter, leave, swap) in [("enter", 0.55, 0.0, None), ("hold", 1.0, 0.0, None), ("swap", 1.0, 0.0, Some(0.5)), ("leave", 1.0, 0.5, None)] {
         let motion = renderer::NoticeMotion { enter, leave, remain: 0.6, swap };
         if swap.is_some() {
-            canvas.notice_card(&next, Some(&card), motion);
+            canvas.notice_card(&next, Some(&card), motion, 1500.0, false);
         } else {
-            canvas.notice_card(&card, None, motion);
+            canvas.notice_card(&card, None, motion, 1500.0, false);
         }
         save(&canvas, &std::path::Path::new(path).with_extension(format!("notice-{name}.png")))?;
     }
@@ -4009,7 +4069,6 @@ fn main() -> Result<()> {
                         if key.key() == Key::Fn as u32 {
                             runtime.fn_event(pressed)?;
                         }
-                        runtime.switcher_key(key.key(), pressed)?;
                     }
                     Event::Pointer(pointer) if pointer.device().name() != "T2 Touch Bar" => {
                         runtime.user_activity(runtime.now_ms(), true)?;

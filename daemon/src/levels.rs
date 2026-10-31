@@ -9,7 +9,10 @@ use std::{
     os::unix::net::UnixStream,
     path::Path,
     process::Command,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, Sender},
+    },
     thread,
 };
 
@@ -115,53 +118,91 @@ pub fn read_control(control: Control) -> Option<u32> {
     }
 }
 
-/// Sets a slider in the background; each command takes a few milliseconds.
-pub fn set_control(control: Control, percent: u32) {
-    let percent = percent.min(100);
-    thread::spawn(move || {
-        let status = match control {
-            Control::Volume => Command::new("wpctl")
-                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{percent}%")])
-                .status(),
-            Control::Keyboard => Command::new("busctl")
-                .args([
-                    "--user",
-                    "set-property",
-                    "org.gnome.SettingsDaemon.Power",
-                    "/org/gnome/SettingsDaemon/Power",
-                    "org.gnome.SettingsDaemon.Power.Keyboard",
-                    "Brightness",
-                    "i",
-                    &percent.to_string(),
-                ])
-                .status(),
-            Control::Brightness => {
-                let Some(path) = screen_backlight() else { return };
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
-                let max: u64 = read(&path, "max_brightness").and_then(|v| v.parse().ok()).unwrap_or(0);
-                // Never fully dark: the screen would be unreadable.
-                let value = (max * u64::from(percent.max(1)) / 100).max(1);
-                Command::new("busctl")
-                    .args([
-                        "--system",
-                        "call",
-                        "org.freedesktop.login1",
-                        "/org/freedesktop/login1/session/auto",
-                        "org.freedesktop.login1.Session",
-                        "SetBrightness",
-                        "ssu",
-                        "backlight",
-                        &name,
-                        &value.to_string(),
-                    ])
-                    .stdout(std::process::Stdio::null())
-                    .status()
-            }
-        };
-        if let Err(error) = status {
-            eprintln!("kait2en-touchbar-plus: set {control:?}: {error}");
-        }
+/// Flips the sound's mute in the background.
+pub fn toggle_mute() {
+    thread::spawn(|| {
+        let _ = Command::new("wpctl")
+            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+            .status();
     });
+}
+
+/// Queues a slider change for the worker. One thread applies them in order
+/// and keeps only the newest value per slider, so a slow command can never
+/// land after a newer one and undo it.
+pub fn set_control(control: Control, percent: u32) {
+    static QUEUE: OnceLock<Sender<(Control, u32)>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (sender, jobs) = mpsc::channel::<(Control, u32)>();
+        thread::Builder::new()
+            .name("level-writer".to_owned())
+            .spawn(move || {
+                while let Ok(first) = jobs.recv() {
+                    let mut latest = [None; 3];
+                    latest[first.0.index()] = Some(first);
+                    while let Ok(job) = jobs.try_recv() {
+                        latest[job.0.index()] = Some(job);
+                    }
+                    for (control, percent) in latest.into_iter().flatten() {
+                        apply_control(control, percent.min(100));
+                    }
+                }
+            })
+            .expect("spawn level-writer");
+        sender
+    });
+    let _ = queue.send((control, percent));
+}
+
+fn apply_control(control: Control, percent: u32) {
+    let status = match control {
+        Control::Volume => {
+            // Moving the slider is a clear wish to hear again.
+            let _ = Command::new("wpctl")
+                .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+                .status();
+            Command::new("wpctl")
+                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{percent}%")])
+                .status()
+        }
+        Control::Keyboard => Command::new("busctl")
+            .args([
+                "--user",
+                "set-property",
+                "org.gnome.SettingsDaemon.Power",
+                "/org/gnome/SettingsDaemon/Power",
+                "org.gnome.SettingsDaemon.Power.Keyboard",
+                "Brightness",
+                "i",
+                &percent.to_string(),
+            ])
+            .status(),
+        Control::Brightness => {
+            let Some(path) = screen_backlight() else { return };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+            let max: u64 = read(&path, "max_brightness").and_then(|v| v.parse().ok()).unwrap_or(0);
+            // Never fully dark: the screen would be unreadable.
+            let value = (max * u64::from(percent.max(1)) / 100).max(1);
+            Command::new("busctl")
+                .args([
+                    "--system",
+                    "call",
+                    "org.freedesktop.login1",
+                    "/org/freedesktop/login1/session/auto",
+                    "org.freedesktop.login1.Session",
+                    "SetBrightness",
+                    "ssu",
+                    "backlight",
+                    &name,
+                    &value.to_string(),
+                ])
+                .stdout(std::process::Stdio::null())
+                .status()
+        }
+    };
+    if let Err(error) = status {
+        eprintln!("kait2en-touchbar-plus: set {control:?}: {error}");
+    }
 }
 
 fn screen_backlight() -> Option<std::path::PathBuf> {

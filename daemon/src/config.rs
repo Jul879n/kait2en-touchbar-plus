@@ -40,8 +40,6 @@ pub struct Config {
     pub screen_lock_dark: bool,
     pub notifications: bool,
     pub suggestions: bool,
-    /// Show the apps of Super+Tab (or Alt+Tab) on the bar.
-    pub app_switcher: bool,
     pub hold_slider_ms: u64,
     /// `auto` (system locale), `es` or `en`.
     pub language: String,
@@ -91,7 +89,6 @@ impl Default for Config {
             screen_lock_dark: true,
             notifications: true,
             suggestions: true,
-            app_switcher: true,
             hold_slider_ms: 400,
             language: "auto".into(),
             icon_color: "mono".into(),

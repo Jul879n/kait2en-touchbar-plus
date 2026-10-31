@@ -313,6 +313,7 @@ fn item_cells(items: &[ItemKind], slots: &[Slot], base: usize, ctx: &LayoutCtx) 
             }
             ItemKind::Emoji => vec![Cell::key(Glyph::Lucide("smile"), at)],
             ItemKind::Controls => vec![Cell::key(Glyph::Lucide("sliders-horizontal"), at)],
+            ItemKind::Apps => vec![Cell::key(Glyph::Lucide("layout-grid"), at)],
             ItemKind::Windows => vec![Cell::key(
                     if ctx.windows_missing {
                         Glyph::Text("--")
@@ -342,7 +343,6 @@ fn item_cells(items: &[ItemKind], slots: &[Slot], base: usize, ctx: &LayoutCtx) 
                         cell.on = true;
                     }
                     (TransientGlyph::Tone(..), TransientAction::SwitchApp(_)) => cell.cols = 1,
-                    (_, TransientAction::SwitchWindow(_)) => cell.cols = 4,
                     _ => {}
                 }
                 vec![cell]
@@ -770,6 +770,8 @@ pub struct Canvas {
     pub full_color: bool,
     app_icons: std::collections::HashMap<&'static str, Option<std::rc::Rc<[u8]>>>,
     notice_fits: std::collections::HashMap<(String, String), notice::NoticeFit>,
+    /// A key held for a long press: its index and how full its bar is (0..1).
+    pub hold_progress: Option<(usize, f32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -831,6 +833,7 @@ impl Canvas {
             full_color: false,
             app_icons: std::collections::HashMap::new(),
             notice_fits: std::collections::HashMap::new(),
+            hold_progress: None,
         };
         canvas.clear();
         Ok(canvas)
@@ -867,6 +870,16 @@ impl Canvas {
                 continue;
             }
             self.button(button, active == Some(index));
+        }
+        if let Some((index, progress)) = self.hold_progress
+            && let Some(button) = layout.buttons.get(index)
+        {
+            let (left, right) = (f32::from(button.left), f32::from(button.right));
+            let filled = (right - left) * progress.clamp(0.0, 1.0);
+            if filled >= 2.0 {
+                let height = f32::from(self.height);
+                self.fill(&rounded_rect(left, 2.0, left + filled, height - 2.0, KEY_RADIUS), self.color.scale(45));
+            }
         }
         if let Some(data) = data {
             for button in &layout.buttons {

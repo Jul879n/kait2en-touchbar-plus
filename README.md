@@ -57,9 +57,9 @@ pensado para 12 ahora ocupa la mitad. Un perfil con `items` vacío deja su zona 
 «Canción actual» (`now_playing`) agrega botones según su `span`: 10 columnas, pausa; 14, anterior y siguiente;
 18, aleatorio y repetir.
 
-## Selector Super/Alt+Tab
+## Botón de apps
 
-Con `app_switcher = true` la barra muestra las apps del selector Super+Tab / Alt+Tab. Requiere la extensión de GNOME.
+El item `apps` abre una fila con las apps abiertas; tocar una enfoca su última ventana. Requiere la extensión de GNOME.
 
 ## Diálogos de apps
 

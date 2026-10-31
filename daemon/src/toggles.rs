@@ -95,17 +95,17 @@ pub fn set(toggle: Toggle, on: bool, bus: &Bus) {
             Toggle::Caffeine => {
                 let mut child = CAFFEINE.lock().unwrap_or_else(|e| e.into_inner());
                 if on && child.is_none() {
-                    *child = Command::new("systemd-inhibit")
+                    *child = Command::new("gnome-session-inhibit")
                         .args([
-                            "--what=idle:sleep",
-                            "--who=kait2en-touchbar-plus",
-                            "--why=Cafeina",
-                            "sleep",
-                            "infinity",
+                            "--app-id=kait2en-touchbar-plus",
+                            "--reason=Cafeina",
+                            "--inhibit=idle",
+                            "--inhibit=suspend",
+                            "--inhibit-only",
                         ])
                         .stdout(Stdio::null())
                         .spawn()
-                        .map_err(|error| eprintln!("kait2en-touchbar-plus: systemd-inhibit: {error}"))
+                        .map_err(|error| eprintln!("kait2en-touchbar-plus: gnome-session-inhibit: {error}"))
                         .ok();
                 } else if !on && let Some(mut process) = child.take() {
                     let _ = process.kill();

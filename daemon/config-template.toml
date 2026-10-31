@@ -58,8 +58,6 @@ pixel_shift_interval_ms = 180000
 # Tarjeta animada de notificaciones y sugerencias de escritura.
 notifications = true
 suggestions = true
-# Mostrar en la barra las apps de Super+Tab / Alt+Tab (requiere la extensión de GNOME).
-app_switcher = true
 # Mantener volumen/brillo este tiempo para abrir el slider.
 hold_slider_ms = 400
 

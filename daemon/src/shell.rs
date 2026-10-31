@@ -114,6 +114,39 @@ pub fn activate_window(id: u32) {
     }
 }
 
+/// Brings the latest window of the app called `name` to the front. The
+/// notification source and the app list share the app's display name.
+pub fn focus_app(name: &str) {
+    let apps = proxy()
+        .and_then(|proxy| Ok(proxy.call::<_, _, (AppList,)>("ListApps", &())?))
+        .map(|(apps,)| apps);
+    let apps = match apps {
+        Ok(apps) => apps,
+        Err(error) => {
+            eprintln!("kait2en-touchbar-plus: focus app: {error:#}");
+            return;
+        }
+    };
+    let wanted = name.to_lowercase();
+    let found = apps
+        .iter()
+        .find(|(id, app, _)| {
+            let stem = id.trim_end_matches(".desktop").to_lowercase();
+            app.to_lowercase() == wanted || stem == wanted
+        })
+        .or_else(|| {
+            apps.iter().find(|(_, app, _)| {
+                let app = app.to_lowercase();
+                app.contains(&wanted) || wanted.contains(&app)
+            })
+        });
+    if let Some((_, _, windows)) = found
+        && let Some((id, _)) = windows.first()
+    {
+        activate_window(*id);
+    }
+}
+
 pub fn select_suggestion(index: u32) {
     if let Err(error) = proxy().and_then(|p| Ok(p.call::<_, _, ()>("SelectSuggestion", &(index,))?)) {
         eprintln!("kait2en-touchbar-plus: select suggestion: {error:#}");

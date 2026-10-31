@@ -17,6 +17,8 @@ pub struct NoticeCard {
     pub title: String,
     pub body: String,
     pub icon: NoticeIcon,
+    /// Name of the app that sent it, so a touch can take the user there.
+    pub app: String,
 }
 
 /// Where the card is in its timeline, each value 0..1.
@@ -35,7 +37,9 @@ pub struct NoticeMotion {
 const BOX: f32 = 50.0;
 const TITLE_SIZE: f32 = 21.0;
 const BODY_SIZE: f32 = 17.0;
-const SLIDE: f32 = 520.0;
+const SLIDE: f32 = 60.0;
+/// Space left at the edges: the card spans the app zone, never the strip.
+const MARGIN: f32 = 8.0;
 
 fn ease_out_back(t: f32) -> f32 {
     let (c1, c3) = (1.2_f32, 2.2_f32);
@@ -56,31 +60,57 @@ fn ease_out(t: f32) -> f32 {
 pub struct NoticeFit {
     title: String,
     body: String,
-    width: f32,
 }
 
 impl Canvas {
     /// Draws `card` for `motion`; `old` is the card being replaced, if any.
-    pub fn notice_card(&mut self, card: &NoticeCard, old: Option<&NoticeCard>, motion: NoticeMotion) {
+    /// `zone_right` is where the app zone ends; the strip beyond it stays
+    /// as drawn when `keep_strip` is set, and black otherwise.
+    pub fn notice_card(
+        &mut self,
+        card: &NoticeCard,
+        old: Option<&NoticeCard>,
+        motion: NoticeMotion,
+        zone_right: f32,
+        keep_strip: bool,
+    ) {
         let full = self.color;
-        self.pixmap.fill(Color::BLACK);
+        if keep_strip {
+            if let Some(rect) = Rect::from_ltrb(0.0, 0.0, zone_right, f32::from(self.height)) {
+                self.pixmap.fill_rect(rect, &BLACK.paint(), Transform::identity(), None);
+            }
+        } else {
+            self.pixmap.fill(Color::BLACK);
+        }
         let leave = motion.leave.clamp(0.0, 1.0);
         let slide = (1.0 - ease_out_back(motion.enter.clamp(0.0, 1.0))) * SLIDE + ease_in(leave) * SLIDE;
         let alpha = (motion.enter.clamp(0.0, 1.0) * (1.0 - leave)).clamp(0.0, 1.0);
         let swap = motion.swap.map_or(1.0, |t| ease_out(t.clamp(0.0, 1.0)));
-        let fit = self.notice_fit(card);
-        let left = ((f32::from(self.width) - (BOX + 16.0 + fit.width)) / 2.0).round() + slide;
+        let fit = self.notice_fit(card, zone_right);
+        let left = (MARGIN + slide).max(0.0);
         if let (Some(old), Some(_)) = (old, motion.swap) {
             // The old text rises and fades in the same place as the new one.
-            let old_fit = self.notice_fit(old);
-            self.notice_text_at(&old_fit, left + BOX + 16.0, alpha * (1.0 - swap), -14.0 * swap);
+            let old_fit = self.notice_fit(old, zone_right);
+            self.notice_text_at(&old_fit, left + BOX + 24.0, alpha * (1.0 - swap), -14.0 * swap);
         }
-        self.notice_body(card, &fit, left, alpha, motion, swap);
+        self.notice_frame_outline(left, zone_right, alpha);
+        self.notice_body(card, &fit, left, zone_right, alpha, motion, swap);
         self.color = full;
         self.flush();
     }
 
-    fn notice_body(&mut self, card: &NoticeCard, fit: &NoticeFit, left: f32, alpha: f32, motion: NoticeMotion, swap: f32) {
+    /// The card is one wide key, so it reads as the thing to touch.
+    fn notice_frame_outline(&mut self, left: f32, zone_right: f32, alpha: f32) {
+        let full = self.color;
+        let height = f32::from(self.height);
+        let right = zone_right - MARGIN;
+        self.color = full.scale((alpha.clamp(0.0, 1.0) * 100.0) as u32);
+        let shade = self.color.scale(22);
+        self.stroke(&rounded_rect(left, 2.0, right, height - 2.0, KEY_RADIUS), shade, 1.5);
+        self.color = full;
+    }
+
+    fn notice_body(&mut self, card: &NoticeCard, fit: &NoticeFit, left: f32, zone_right: f32, alpha: f32, motion: NoticeMotion, swap: f32) {
         let full = self.color;
         let height = f32::from(self.height);
         let top = (height - BOX) / 2.0;
@@ -90,11 +120,11 @@ impl Canvas {
         self.color = full.scale((alpha * 100.0) as u32);
         let shade = self.color.scale(glow as u32);
         self.stroke(
-            &rounded_rect(left + 0.75, top + 0.75, left + BOX - 0.75, top + BOX - 0.75, KEY_RADIUS),
+            &rounded_rect(left + 4.75, top + 0.75, left + 4.0 + BOX - 0.75, top + BOX - 0.75, KEY_RADIUS),
             shade,
             1.5,
         );
-        let (cx, cy) = (left + BOX / 2.0, height / 2.0);
+        let (cx, cy) = (left + 4.0 + BOX / 2.0, height / 2.0);
         match &card.icon {
             NoticeIcon::App(path) => self.draw_app_icon(cx, cy, path),
             NoticeIcon::Lucide(name) => {
@@ -104,9 +134,9 @@ impl Canvas {
             }
         }
         self.color = full;
-        self.notice_text_at(fit, left + BOX + 16.0, alpha * swap, 14.0 * (1.0 - swap));
+        self.notice_text_at(fit, left + BOX + 24.0, alpha * swap, 14.0 * (1.0 - swap));
         // The time bar under the card.
-        let remaining = ((BOX + 16.0 + fit.width) * motion.remain.clamp(0.0, 1.0)).max(0.0);
+        let remaining = ((zone_right - MARGIN - left) * motion.remain.clamp(0.0, 1.0)).max(0.0);
         if remaining >= 1.0 && alpha > 0.0 {
             let tint = full.scale((alpha * 40.0) as u32);
             self.fill(&rounded_rect(left, height - 3.0, left + remaining, height - 1.0, 1.0), tint);
@@ -116,19 +146,16 @@ impl Canvas {
 
     /// The card's text fitted beside the box. Computed once per card: the
     /// fitting measures glyphs and the card draws at 30 fps.
-    fn notice_fit(&mut self, card: &NoticeCard) -> NoticeFit {
-        let key = (card.title.clone(), card.body.clone());
+    fn notice_fit(&mut self, card: &NoticeCard, zone_right: f32) -> NoticeFit {
+        // The fit depends on the room, so the zone is part of the key.
+        let key = (card.title.clone(), format!("{}\0{}", card.body, zone_right as u32));
         if let Some(found) = self.notice_fits.get(&key) {
             return found.clone();
         }
-        let max = f32::from(self.width) - 400.0;
+        let max = (zone_right - 2.0 * MARGIN - BOX - 24.0 - 24.0 - SLIDE).max(60.0);
         let title = self.fit_ascii(&card.title, TITLE_SIZE, max, STRONG_WEIGHT);
         let body = self.fit_ascii(&card.body, BODY_SIZE, max, FONT_WEIGHT);
-        let width = self
-            .text_width_at(&title, TITLE_SIZE, STRONG_WEIGHT)
-            .max(self.text_width_at(&body, BODY_SIZE, FONT_WEIGHT))
-            .max(120.0);
-        let fit = NoticeFit { title, body, width };
+        let fit = NoticeFit { title, body };
         if self.notice_fits.len() >= 8 {
             self.notice_fits.clear();
         }

@@ -10,6 +10,7 @@ use crate::renderer::Shape;
 
 pub static ICONS: &[(&str, &str)] = &[
     ("app-window", include_str!("../icons/lucide/app-window.svg")),
+    ("layout-grid", include_str!("../icons/lucide/layout-grid.svg")),
     ("arrow-down-up", include_str!("../icons/lucide/arrow-down-up.svg")),
     ("arrow-left", include_str!("../icons/lucide/arrow-left.svg")),
     ("arrow-right", include_str!("../icons/lucide/arrow-right.svg")),
@@ -66,6 +67,7 @@ pub static ICONS: &[(&str, &str)] = &[
     ("thermometer", include_str!("../icons/lucide/thermometer.svg")),
     ("thumbs-up", include_str!("../icons/lucide/thumbs-up.svg")),
     ("timer", include_str!("../icons/lucide/timer.svg")),
+    ("volume-x", include_str!("../icons/lucide/volume-x.svg")),
     ("volume-2", include_str!("../icons/lucide/volume-2.svg")),
     ("wifi", include_str!("../icons/lucide/wifi.svg")),
     ("wifi-off", include_str!("../icons/lucide/wifi-off.svg")),
@@ -278,7 +280,7 @@ mod tests {
         for n in [
             "bell", "repeat", "repeat-1", "shuffle", "sliders-horizontal", "volume-2", "keyboard", "sun", "camera", "cloud-sun",
             "smile", "fingerprint", "lock", "lock-open", "check", "app-window", "bell-off", "sun-moon", "coffee", "wifi", "wifi-off",
-            "bluetooth", "bluetooth-off",
+            "bluetooth", "bluetooth-off", "layout-grid", "volume-x",
         ] {
             assert!(exists(n), "{n}");
         }

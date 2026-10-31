@@ -119,11 +119,6 @@ PageColumn {
             onToggled: (v) => { page.cfg.notifications = v; app.bump() }
         }
         SwitchRow {
-            title: app.tt("Apps de Cmd+Tab en la barra")
-            checked: !!app.get(page.cfg, "app_switcher", true)
-            onToggled: (v) => { page.cfg.app_switcher = v; app.bump() }
-        }
-        SwitchRow {
             title: app.tt("Sugerencias de escritura")
             checked: !!app.get(page.cfg, "suggestions", true)
             onToggled: (v) => { page.cfg.suggestions = v; app.bump() }
