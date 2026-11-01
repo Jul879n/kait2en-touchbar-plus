@@ -223,7 +223,7 @@ fn widget_cols(kind: WidgetKind) -> u16 {
         | WidgetKind::Fan => 2,
         WidgetKind::Network | WidgetKind::NextEvent => 4,
         WidgetKind::NowPlaying => 8,
-        WidgetKind::Pet => 4,
+        WidgetKind::Pet => 8,
     }
 }
 
@@ -476,6 +476,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Width in pixels of the pet item, if the layout has one: the pet draws its own frames to that size.
+    pub fn pet_width(&self) -> Option<u16> {
+        self.buttons
+            .iter()
+            .find(|button| matches!(button.glyph, Glyph::Widget(WidgetKind::Pet)))
+            .map(|button| button.right.saturating_sub(button.left))
+    }
+
     pub fn new(mode: Mode, width: u16, physical_escape: bool) -> Self {
         Self::with_custom(mode, width, physical_escape, &[])
     }

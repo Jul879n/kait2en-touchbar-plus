@@ -48,7 +48,7 @@ QtObject {
     // The bar is a grid of 24 columns; widths below must match `widget_cols` and the cells of the daemon.
     readonly property int gridCols: 24
     readonly property var itemCols: ({
-        "playback": 6, "volume": 8, "brightness": 4, "keyboard_light": 4, "now_playing": 8, "network": 4, "next_event": 4, "pet": 4
+        "playback": 6, "volume": 8, "brightness": 4, "keyboard_light": 4, "now_playing": 8, "network": 4, "next_event": 4, "pet": 8
     })
     // Keys an item is made of: a span can't be narrower than that.
     readonly property var itemCells: ({ "playback": 3, "volume": 4, "brightness": 2, "keyboard_light": 2, "pet": 2 })

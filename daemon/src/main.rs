@@ -800,6 +800,10 @@ impl Runtime {
             self.physical_escape,
             &self.layout_ctx,
         );
+        if let Some(width) = layout.pet_width() {
+            // The pet draws at 64 px high and the bar scales it to the pet's 60.
+            pet::set_width(u32::from(width) * 64 / 60);
+        }
         self.widgets.panel = self.panel.as_ref().map(|panel| {
             let button = layout
                 .buttons

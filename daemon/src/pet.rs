@@ -5,7 +5,10 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -22,6 +25,11 @@ const PATH: &str = "/cl/trazko/Mascota";
 const CALL_TIMEOUT: Duration = Duration::from_millis(200);
 /// Height of the pet on the bar, in pixels.
 pub const HEIGHT: u32 = 60;
+
+/// Width in pixels the bar gives the pet item, as last told to it (0 = not yet).
+static WIDTH: AtomicU32 = AtomicU32::new(0);
+/// Whether the current pet process already got `WIDTH`; false after it (re)appears on the bus.
+static TOLD: AtomicBool = AtomicBool::new(false);
 
 /// A frame of the pet already scaled to the bar, as straight RGBA.
 #[derive(Clone, Debug)]
@@ -43,8 +51,12 @@ pub fn scale(png: &[u8]) -> Option<Sprite> {
     Some(Sprite { width, height: HEIGHT, rgba: rgba.into_raw().into() })
 }
 
-/// Scaled frames by name: the pet repeats a few dozen poses.
+/// Scaled frames by name: the pet repeats a few dozen poses. Eye frames (`ojos:` names) carry their position
+/// and change many times a second, so they are scaled on the spot instead of cached.
 fn sprite(name: &str, png: &[u8]) -> Option<Sprite> {
+    if name.starts_with("ojos:") {
+        return scale(png);
+    }
     static CACHE: Mutex<Option<HashMap<String, Sprite>>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
@@ -87,6 +99,8 @@ fn listen(bus: &Bus) -> Result<()> {
         match header.member().map(|member| member.as_str()) {
             Some("Cuadro") => {
                 let Ok((name, png)) = body.deserialize::<(String, Vec<u8>)>() else { continue };
+                // Its first frame proves it serves its methods, which the name appearing on the bus does not.
+                tell_width();
                 if let Some(sprite) = sprite(&name, &png) {
                     bus.send(Ext::PetFrame(sprite));
                 }
@@ -117,6 +131,7 @@ fn owners(bus: &Bus) -> Result<()> {
         if name != NAME {
             continue;
         }
+        TOLD.store(false, Ordering::Relaxed);
         if new.is_empty() {
             bus.send(Ext::PetGone);
         } else {
@@ -124,6 +139,32 @@ fn owners(bus: &Bus) -> Result<()> {
         }
     }
     Err(anyhow::anyhow!("session bus iterator ended"))
+}
+
+/// Tells the pet how wide its item is, when that changes, so it can compose its frames to that width.
+pub fn set_width(px: u32) {
+    if WIDTH.swap(px, Ordering::Relaxed) == px {
+        return;
+    }
+    TOLD.store(true, Ordering::Relaxed);
+    thread::spawn(move || call_width(px));
+}
+
+/// Sends the width to a pet that has not got it yet.
+fn tell_width() {
+    let px = WIDTH.load(Ordering::Relaxed);
+    if px > 0 && !TOLD.swap(true, Ordering::Relaxed) {
+        thread::spawn(move || call_width(px));
+    }
+}
+
+fn call_width(px: u32) {
+    let result = Builder::session()
+        .and_then(|builder| builder.method_timeout(CALL_TIMEOUT).build())
+        .and_then(|connection| Proxy::new(&connection, NAME, PATH, NAME))
+        .and_then(|proxy| proxy.call::<_, _, ()>("Ancho", &(px,)));
+    // Without the pet the call fails, which is normal: `send_state` repeats it when the pet appears.
+    drop(result);
 }
 
 /// The pet as it is now, for when it starts after the daemon or the daemon after it.
@@ -136,6 +177,10 @@ fn send_state(connection: &Connection, bus: &Bus) {
         .and_then(|(name, png, text)| Some((sprite(&name, &png)?, text)));
     match state {
         Some((sprite, text)) => {
+            let width = WIDTH.load(Ordering::Relaxed);
+            if width > 0 {
+                call_width(width);
+            }
             bus.send(Ext::PetFrame(sprite));
             bus.send(Ext::PetText(text));
         }
