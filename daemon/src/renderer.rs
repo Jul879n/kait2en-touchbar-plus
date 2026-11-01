@@ -799,7 +799,7 @@ pub use notice::{NoticeCard, NoticeIcon, NoticeMotion, SCROLL_END_MS, SCROLL_PAU
 /// every key gets the same optical margin.
 const ICON_SCALE: f32 = 1.3;
 const ICON_STROKE: f32 = 2.3;
-const KEY_INSET: f32 = 6.5;
+const KEY_INSET: f32 = 0.0;
 const KEY_RADIUS: f32 = 8.0;
 const KEY_OUTLINE: f32 = 1.5;
 

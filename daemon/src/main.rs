@@ -789,13 +789,19 @@ impl Runtime {
         } else {
             self.plus.zone_for(&self.focus_app).1.to_vec()
         };
-        self.items = zone.iter().chain(&self.plus.strip).cloned().collect();
+        // With the panel open the strip steps aside so the sliders use the whole bar.
+        let (strip, strip_slots, strip_col): (&[ItemKind], &[Slot], Option<u16>) = if self.panel.is_some() {
+            (&[], &[], None)
+        } else {
+            (&self.plus.strip, &self.plus.strip_slots, self.plus.strip_col)
+        };
+        self.items = zone.iter().chain(strip).cloned().collect();
         let layout = Layout::from_placed(
             &zone,
             &slots,
-            &self.plus.strip,
-            &self.plus.strip_slots,
-            self.plus.strip_col,
+            strip,
+            strip_slots,
+            strip_col,
             self.canvas.width,
             self.physical_escape,
             &self.layout_ctx,
