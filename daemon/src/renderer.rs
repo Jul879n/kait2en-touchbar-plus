@@ -102,7 +102,7 @@ const KEY_GAP_F: f32 = KEY_GAP as f32;
 const LEVEL_ICON_SLOT: f32 = 60.0;
 const LEVEL_SPACING: f32 = 22.0;
 const LEVEL_METER: f32 = 320.0;
-const GROUP_GAP: u16 = 56;
+pub const GROUP_GAP: u16 = 56;
 const ART: usize = 52;
 const PANEL_GAP: f32 = 24.0;
 
@@ -115,27 +115,59 @@ pub fn panel_slice(zone: (u16, u16), count: usize, index: usize) -> (f32, f32) {
     (start, start + width)
 }
 
-/// The bar of a slider: after the icon, before the percentage.
-pub fn panel_bar(slice_left: f32, slice_right: f32) -> (f32, f32) {
-    (slice_left + 52.0, (slice_right - 92.0).max(slice_left + 60.0))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelPart {
+    Icon,
+    Minus,
+    Value,
+    Plus,
 }
 
-/// Which slider `x` falls on and the level (0..=100) it sets.
-pub fn panel_hit(zone: (u16, u16), count: usize, x: f64) -> Option<(usize, u32)> {
+/// Zonas de un control: ícono, botón −, centro del valor, botón +.
+pub struct PanelGeom {
+    pub icon: (f32, f32),
+    pub minus: (f32, f32),
+    pub value_cx: f32,
+    pub plus: (f32, f32),
+}
+
+pub fn panel_geom(left: f32, right: f32) -> PanelGeom {
+    let icon = (left, left + 44.0);
+    let (inner_l, inner_r) = (left + 48.0, right - 4.0);
+    let mid = (inner_l + inner_r) / 2.0;
+    let half_value = 34.0_f32.min((inner_r - inner_l) / 6.0);
+    PanelGeom {
+        icon,
+        minus: (inner_l, mid - half_value),
+        value_cx: mid,
+        plus: (mid + half_value, inner_r),
+    }
+}
+
+/// Qué control y qué parte cae bajo `x`.
+pub fn panel_hit(zone: (u16, u16), count: usize, x: f64) -> Option<(usize, PanelPart)> {
     (0..count).find_map(|index| {
         let (left, right) = panel_slice(zone, count, index);
         let reach = PANEL_GAP / 2.0;
         if x < f64::from(left - reach) || x >= f64::from(right + reach) {
             return None;
         }
-        Some((index, panel_level(zone, count, index, x)))
+        let geom = panel_geom(left, right);
+        let part = if x < f64::from(left) {
+            PanelPart::Minus
+        } else if x >= f64::from(right) {
+            PanelPart::Plus
+        } else if x < f64::from(geom.icon.1) {
+            PanelPart::Icon
+        } else if x < f64::from(geom.minus.1) {
+            PanelPart::Minus
+        } else if x >= f64::from(geom.plus.0) {
+            PanelPart::Plus
+        } else {
+            PanelPart::Value
+        };
+        Some((index, part))
     })
-}
-
-pub fn panel_level(zone: (u16, u16), count: usize, index: usize, x: f64) -> u32 {
-    let (left, right) = panel_slice(zone, count, index);
-    let (bar_left, bar_right) = panel_bar(left, right);
-    (((x as f32 - bar_left) / (bar_right - bar_left)).clamp(0.0, 1.0) * 100.0).round() as u32
 }
 const NP_FONT_SIZE: f32 = 20.0;
 const NP_LINE_Y: f32 = 20.0;
@@ -746,7 +778,7 @@ const KEY_FONT_SIZE: f32 = 23.0;
 mod prompt;
 pub use prompt::{STATES as TOUCH_ID_STATES, TouchIdLook};
 mod notice;
-pub use notice::{NoticeCard, NoticeIcon, NoticeMotion};
+pub use notice::{NoticeCard, NoticeIcon, NoticeMotion, SCROLL_END_MS, SCROLL_PAUSE_MS};
 
 /// Icons are drawn on a 24 px design grid and centered by their bounds so
 /// every key gets the same optical margin.
@@ -930,28 +962,28 @@ impl Canvas {
         let cy = f32::from(self.height) / 2.0;
         for (index, row) in panel.rows.iter().enumerate() {
             let (slice_left, slice_right) = panel_slice(panel.zone, panel.rows.len(), index);
-            let (bar_left, bar_right) = panel_bar(slice_left, slice_right);
-            let dim = if panel.active.is_some_and(|active| active != index) { 55 } else { 100 };
+            let geom = panel_geom(slice_left, slice_right);
+            let dim = if panel.pressed.is_some_and(|(pressed, _)| pressed != index) { 55 } else { 100 };
             let color = self.color.scale(dim);
             if let Some(shapes) = lucide::shapes(row.icon) {
                 let saved = self.color;
                 self.color = if self.full_color { full_tint(row.icon, color, self.base) } else { color };
-                self.shapes_sized(slice_left + 20.0, cy, shapes, BLACK, 0.85);
+                self.shapes_sized(geom.icon.0 + 20.0, cy, shapes, BLACK, 0.85);
                 self.color = saved;
             }
-            self.fill(&rounded_rect(bar_left, cy - 4.0, bar_right, cy + 4.0, 4.0), color.scale(25));
-            let percent = row.percent.unwrap_or(0).min(100);
-            let filled = (bar_right - bar_left) * percent as f32 / 100.0;
-            if filled >= 1.0 {
-                self.fill(&rounded_rect(bar_left, cy - 4.0, bar_left + filled, cy + 4.0, 4.0), color);
-            }
-            let mut knob = PathBuilder::new();
-            knob.push_circle(bar_left + filled, cy, 9.0);
-            if let Some(path) = knob.finish() {
-                self.fill(&path, color);
+            let height = f32::from(self.height);
+            for (part, (l, r), glyph) in [(PanelPart::Minus, geom.minus, "minus"), (PanelPart::Plus, geom.plus, "plus")] {
+                let down = panel.pressed == Some((index, part));
+                self.fill(&rounded_rect(l, 6.0, r, height - 6.0, KEY_RADIUS), color.scale(if down { 40 } else { 16 }));
+                if let Some(shapes) = lucide::shapes(glyph) {
+                    let saved = self.color;
+                    self.color = color;
+                    self.shapes_sized((l + r) / 2.0, cy, shapes, BLACK, 0.85);
+                    self.color = saved;
+                }
             }
             let text = row.percent.map_or_else(|| "--".to_owned(), |p| format!("{p}%"));
-            self.center_text(bar_right + 48.0, cy, &text, 20.0, color);
+            self.center_text(geom.value_cx, cy, &text, 20.0, color);
         }
     }
 
@@ -1754,16 +1786,17 @@ mod tests {
     }
 
     #[test]
-    fn panel_hit_maps_x_to_slider_and_level() {
-        let zone = (10, 1000);
-        let (left, right) = panel_slice(zone, 3, 1);
-        let (bar_left, bar_right) = panel_bar(left, right);
-        assert_eq!(panel_hit(zone, 3, f64::from(bar_left)), Some((1, 0)));
-        assert_eq!(panel_hit(zone, 3, f64::from(bar_right)), Some((1, 100)));
-        let mid = f64::from((bar_left + bar_right) / 2.0);
-        assert_eq!(panel_hit(zone, 3, mid), Some((1, 50)));
-        assert_eq!(panel_hit(zone, 3, -5.0), None);
-        // Slices never overlap.
+    fn panel_hit_maps_x_to_part() {
+        let zone = (100, 1000);
+        let (l0, r0) = panel_slice(zone, 3, 0);
+        let g0 = panel_geom(l0, r0);
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.icon.0 + 5.0)), Some((0, PanelPart::Icon)));
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.minus.0 + 1.0)), Some((0, PanelPart::Minus)));
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.value_cx)), Some((0, PanelPart::Value)));
+        let (l2, r2) = panel_slice(zone, 3, 2);
+        let g2 = panel_geom(l2, r2);
+        assert_eq!(panel_hit(zone, 3, f64::from(g2.plus.1 - 1.0)), Some((2, PanelPart::Plus)));
+        assert_eq!(panel_hit(zone, 3, 2000.0), None);
         assert!(panel_slice(zone, 3, 0).1 < panel_slice(zone, 3, 1).0);
     }
 

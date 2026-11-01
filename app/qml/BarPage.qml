@@ -395,13 +395,18 @@ Item {
                             spacing: 10
                             readonly property string icn: ({ "volume": "volume-2", "brightness": "sun", "keyboard": "keyboard" })[modelData] || "sliders-horizontal"
                             Icon { anchors.verticalCenter: parent.verticalCenter; name: parent.icn; size: 22; tint: Theme.tint(parent.icn, page.fullColor) }
-                            Item {
+                            Row {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 32
-                                height: 20
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 6; radius: 3; color: Theme.line }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * 0.5; height: 6; radius: 3; color: Theme.glow }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; x: parent.width * 0.5 - 9; width: 18; height: 18; radius: 9; color: Theme.glow }
+                                spacing: 8
+                                Rectangle {
+                                    width: 40; height: 32; radius: 8; color: Theme.line
+                                    Text { anchors.centerIn: parent; text: "−"; color: Theme.glow; font.pixelSize: 18 }
+                                }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "50%"; color: Theme.glow; font.pixelSize: 14 }
+                                Rectangle {
+                                    width: 40; height: 32; radius: 8; color: Theme.line
+                                    Text { anchors.centerIn: parent; text: "+"; color: Theme.glow; font.pixelSize: 18 }
+                                }
                             }
                         }
                     }
@@ -571,7 +576,7 @@ Item {
                             visible: insp.item !== null && insp.item.type === "controls"
                             width: parent.width
                             Repeater {
-                                model: [["volume", "Mostrar el slider de volumen"], ["brightness", "Mostrar el slider de brillo"], ["keyboard", "Mostrar el slider de luz del teclado"]]
+                                model: [["volume", "Mostrar el control de volumen"], ["brightness", "Mostrar el control de brillo"], ["keyboard", "Mostrar el control de luz del teclado"]]
                                 SwitchRow {
                                     title: app.tt(modelData[1])
                                     checked: app.get(st.layout.controls, "items", []).indexOf(modelData[0]) >= 0
@@ -579,7 +584,7 @@ Item {
                                         var items = st.layout.controls.items, at = items.indexOf(modelData[0])
                                         if (v && at < 0) items.push(modelData[0])
                                         else if (!v && at >= 0) {
-                                            if (items.length === 1) { app.bump(); app.toast(app.tt("Deje al menos un slider.")); return }
+                                            if (items.length === 1) { app.bump(); app.toast(app.tt("Deje al menos un control.")); return }
                                             items.splice(at, 1)
                                         }
                                         app.bump()

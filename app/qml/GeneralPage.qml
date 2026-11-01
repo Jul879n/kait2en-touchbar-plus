@@ -104,7 +104,7 @@ PageColumn {
         }
         StepRow {
             last: true
-            title: app.tt("Mantener para abrir el slider (ms)")
+            title: app.tt("Mantener volumen/brillo para repetir (ms)")
             value: app.get(page.cfg, "hold_slider_ms", 500)
             from: 200; to: 1500; step: 50
             onMoved: (v) => { page.cfg.hold_slider_ms = v; app.bump() }
@@ -117,6 +117,12 @@ PageColumn {
             title: app.tt("Notificaciones en la barra")
             checked: !!app.get(page.cfg, "notifications", true)
             onToggled: (v) => { page.cfg.notifications = v; app.bump() }
+        }
+        StepRow {
+            title: app.tt("Duración de la notificación (ms)")
+            value: app.get(page.cfg, "notice_hold_ms", 4500)
+            from: 2000; to: 20000; step: 500
+            onMoved: (v) => { page.cfg.notice_hold_ms = v; app.bump() }
         }
         SwitchRow {
             title: app.tt("Sugerencias de escritura")

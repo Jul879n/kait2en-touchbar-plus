@@ -69,14 +69,55 @@ pub struct Level {
     pub muted: bool,
 }
 
+/// Corre `wpctl` y, si falla (p. ej. no resuelve el sink por defecto cuando
+/// es un filter-chain), el equivalente de `pactl`, que sí lo resuelve.
+fn sink_status(wpctl: &[&str], pactl: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    match Command::new("wpctl").args(wpctl).output() {
+        Ok(out) if out.status.success() => return Ok(out.status),
+        Ok(out) => eprintln!(
+            "kait2en-touchbar-plus: wpctl {wpctl:?} -> {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(error) => eprintln!("kait2en-touchbar-plus: wpctl {wpctl:?}: {error}"),
+    }
+    let out = Command::new("pactl").env("LC_ALL", "C").args(pactl).output()?;
+    if !out.status.success() {
+        eprintln!(
+            "kait2en-touchbar-plus: pactl {pactl:?} -> {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(out.status)
+}
+
 pub fn volume() -> Level {
-    Command::new("wpctl")
+    let wpctl = Command::new("wpctl")
         .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
         .output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(Level::default, |text| parse_wpctl(&text))
+        .map(|text| parse_wpctl(&text));
+    if let Some(level) = wpctl {
+        return level;
+    }
+    let pactl = |args: &[&str]| {
+        Command::new("pactl")
+            .env("LC_ALL", "C")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+    };
+    let percent = pactl(&["get-sink-volume", "@DEFAULT_SINK@"]).and_then(|text| {
+        let (before, _) = text.split_once('%')?;
+        before.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    });
+    let muted = pactl(&["get-sink-mute", "@DEFAULT_SINK@"]).is_some_and(|text| text.contains("yes"));
+    Level { percent, muted }
 }
 
 fn parse_wpctl(text: &str) -> Level {
@@ -121,9 +162,10 @@ pub fn read_control(control: Control) -> Option<u32> {
 /// Flips the sound's mute in the background.
 pub fn toggle_mute() {
     thread::spawn(|| {
-        let _ = Command::new("wpctl")
-            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
-            .status();
+        let _ = sink_status(
+            &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+            &["set-sink-mute", "@DEFAULT_SINK@", "toggle"],
+        );
     });
 }
 
@@ -154,16 +196,37 @@ pub fn set_control(control: Control, percent: u32) {
     let _ = queue.send((control, percent));
 }
 
+/// Primer repetido tras el toque en un botón −/+ del panel.
+pub const REPEAT_FIRST_MS: u64 = 350;
+
+/// Intervalo entre pasos de 1 % según cuánto lleva mantenido.
+pub fn repeat_interval_ms(held_ms: u64) -> u64 {
+    match held_ms {
+        0..1000 => 150,
+        1000..2000 => 90,
+        2000..3000 => 50,
+        _ => 25,
+    }
+}
+
+/// `level` movido `delta` puntos, dentro de 0..=100 (valores >100 de wpctl se tratan como 100).
+pub fn stepped(level: u32, delta: i32) -> u32 {
+    (i64::from(level.min(100)) + i64::from(delta)).clamp(0, 100) as u32
+}
+
 fn apply_control(control: Control, percent: u32) {
     let status = match control {
         Control::Volume => {
             // Moving the slider is a clear wish to hear again.
-            let _ = Command::new("wpctl")
-                .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
-                .status();
-            Command::new("wpctl")
-                .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{percent}%")])
-                .status()
+            let _ = sink_status(
+                &["set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
+                &["set-sink-mute", "@DEFAULT_SINK@", "0"],
+            );
+            let value = format!("{percent}%");
+            sink_status(
+                &["set-volume", "@DEFAULT_AUDIO_SINK@", &value],
+                &["set-sink-volume", "@DEFAULT_SINK@", &value],
+            )
         }
         Control::Keyboard => Command::new("busctl")
             .args([
@@ -242,6 +305,19 @@ fn read(dir: &Path, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeat_helpers() {
+        assert_eq!(repeat_interval_ms(0), 150);
+        assert_eq!(repeat_interval_ms(999), 150);
+        assert_eq!(repeat_interval_ms(1000), 90);
+        assert_eq!(repeat_interval_ms(2500), 50);
+        assert_eq!(repeat_interval_ms(10_000), 25);
+        assert_eq!(stepped(0, -1), 0);
+        assert_eq!(stepped(100, 1), 100);
+        assert_eq!(stepped(120, -1), 99);
+        assert_eq!(stepped(41, 1), 42);
+    }
 
     #[test]
     fn wpctl_output_is_parsed() {

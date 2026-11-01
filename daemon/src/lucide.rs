@@ -55,6 +55,7 @@ pub static ICONS: &[(&str, &str)] = &[
     ("pause", include_str!("../icons/lucide/pause.svg")),
     ("play", include_str!("../icons/lucide/play.svg")),
     ("plus", include_str!("../icons/lucide/plus.svg")),
+    ("minus", include_str!("../icons/lucide/minus.svg")),
     ("rotate-cw", include_str!("../icons/lucide/rotate-cw.svg")),
     ("search", include_str!("../icons/lucide/search.svg")),
     ("smile", include_str!("../icons/lucide/smile.svg")),
@@ -280,7 +281,7 @@ mod tests {
         for n in [
             "bell", "repeat", "repeat-1", "shuffle", "sliders-horizontal", "volume-2", "keyboard", "sun", "camera", "cloud-sun",
             "smile", "fingerprint", "lock", "lock-open", "check", "app-window", "bell-off", "sun-moon", "coffee", "wifi", "wifi-off",
-            "bluetooth", "bluetooth-off", "layout-grid", "volume-x",
+            "bluetooth", "bluetooth-off", "layout-grid", "volume-x", "minus", "plus",
         ] {
             assert!(exists(n), "{n}");
         }

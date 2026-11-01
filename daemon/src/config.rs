@@ -39,7 +39,10 @@ pub struct Config {
     pub pixel_shift_interval_ms: u64,
     pub screen_lock_dark: bool,
     pub notifications: bool,
+    /// Tiempo visible de una notificación.
+    pub notice_hold_ms: u64,
     pub suggestions: bool,
+    /// Mantener volumen/brillo este tiempo para repetir ±1 %.
     pub hold_slider_ms: u64,
     /// `auto` (system locale), `es` or `en`.
     pub language: String,
@@ -88,6 +91,7 @@ impl Default for Config {
             pixel_shift_interval_ms: 180_000,
             screen_lock_dark: true,
             notifications: true,
+            notice_hold_ms: 4_500,
             suggestions: true,
             hold_slider_ms: 400,
             language: "auto".into(),
@@ -168,6 +172,10 @@ impl Config {
         anyhow::ensure!(
             self.dim_brightness <= self.active_brightness,
             "dim_brightness must not exceed active_brightness"
+        );
+        anyhow::ensure!(
+            (2_000..=20_000).contains(&self.notice_hold_ms),
+            "notice_hold_ms must be 2000..20000"
         );
         anyhow::ensure!(
             (200..=1500).contains(&self.hold_slider_ms),
@@ -344,6 +352,7 @@ mod tests {
         assert!(config.always_on);
         assert_eq!(config.dim_after_ms, 120_000);
         assert_eq!(config.hold_slider_ms, 400);
+        assert_eq!(config.notice_hold_ms, 4_500);
         let mut bad: Config = toml::from_str("dim_after_ms = 500").unwrap();
         let error = bad.validate().unwrap_err().to_string();
         assert!(error.contains("dim_after_ms must be"), "{error}");

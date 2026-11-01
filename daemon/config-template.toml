@@ -57,8 +57,10 @@ pixel_shift = true
 pixel_shift_interval_ms = 180000
 # Tarjeta animada de notificaciones y sugerencias de escritura.
 notifications = true
+# Tiempo que se ve cada notificación (ms).
+notice_hold_ms = 4500
 suggestions = true
-# Mantener volumen/brillo este tiempo para abrir el slider.
+# Mantener volumen/brillo este tiempo para repetir ±1 %.
 hold_slider_ms = 400
 
 # Idioma de los textos de la barra: auto (según el sistema), es o en.

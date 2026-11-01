@@ -4,7 +4,7 @@
 
 use std::{fs, path::PathBuf};
 
-use crate::renderer::WidgetKind;
+use crate::renderer::{PanelPart, WidgetKind};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Weather {
@@ -35,8 +35,8 @@ pub struct WidgetData {
 pub struct PanelView {
     pub zone: (u16, u16),
     pub rows: Vec<PanelRow>,
-    /// The slider under the finger; the others dim.
-    pub active: Option<usize>,
+    /// El botón bajo el dedo; los demás controles se atenúan.
+    pub pressed: Option<(usize, PanelPart)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
