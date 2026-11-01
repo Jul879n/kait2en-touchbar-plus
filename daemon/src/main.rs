@@ -20,6 +20,7 @@ mod atspi;
 mod mpris;
 mod notify;
 mod policy;
+mod pet;
 mod pomodoro;
 mod renderer;
 mod screensaver;
@@ -794,6 +795,7 @@ impl Runtime {
             &slots,
             &self.plus.strip,
             &self.plus.strip_slots,
+            self.plus.strip_col,
             self.canvas.width,
             self.physical_escape,
             &self.layout_ctx,
@@ -2444,6 +2446,33 @@ impl Runtime {
         self.refresh_widgets()
     }
 
+    fn pet_frame(&mut self, sprite: pet::Sprite) -> Result<()> {
+        self.widgets.pet = Some(sprite);
+        self.pet_changed()
+    }
+
+    fn pet_text(&mut self, text: String) -> Result<()> {
+        if self.widgets.pet_text == text {
+            return Ok(());
+        }
+        self.widgets.pet_text = text;
+        self.pet_changed()
+    }
+
+    fn pet_gone(&mut self) -> Result<()> {
+        self.widgets.pet = None;
+        self.widgets.pet_text.clear();
+        self.pet_changed()
+    }
+
+    /// The pet sets the pace: each frame it publishes redraws the bar.
+    fn pet_changed(&mut self) -> Result<()> {
+        if self.items.contains(&ItemKind::Pet) {
+            self.refresh_widgets()?;
+        }
+        Ok(())
+    }
+
     fn now_playing_tick(&mut self, now: u64) -> Result<()> {
         if !self.np_next_ms.is_some_and(|due| now >= due) {
             return Ok(());
@@ -2556,6 +2585,9 @@ impl Runtime {
             | ItemKind::Fan
             | ItemKind::Network => CustomKey::run("gnome-system-monitor"),
             ItemKind::Pomodoro => self.pomodoro_tap(now)?,
+            ItemKind::Pet => {
+                std::thread::spawn(pet::touch);
+            }
             ItemKind::Controls => self.toggle_panel(now),
             ItemKind::Emoji => self.open_emoji(now),
             ItemKind::Windows => {
@@ -2854,7 +2886,9 @@ impl Runtime {
     }
 
     fn focus_changed(&mut self, app: String) -> Result<()> {
-        if app == self.focus_app {
+        // A window with no desktop file (`window:<n>`: a popup or helper that
+        // flashes focus) is not an app switch; keep the current row.
+        if app.starts_with("window:") || app == self.focus_app {
             return Ok(());
         }
         let changed = self.plus.zone_for(&app) != self.plus.zone_for(&self.focus_app);
@@ -3933,7 +3967,7 @@ fn snapshot(path: &str) -> Result<()> {
         )?;
         Ok(())
     };
-    let bar = Layout::from_placed(&plus.default, &plus.default_slots, &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let bar = Layout::from_placed(&plus.default, &plus.default_slots, &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.keys_with(&bar, None, Some(&data));
     save(&canvas, std::path::Path::new(path))?;
 
@@ -3944,7 +3978,7 @@ fn snapshot(path: &str) -> Result<()> {
         .position(|item| *item == ItemKind::Controls)
         .and_then(|at| plus.default_slots.get(at).copied())
         .unwrap_or_default();
-    let layout = Layout::from_placed(&zone, &[controls_slot], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let layout = Layout::from_placed(&zone, &[controls_slot], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     let left = layout
         .buttons
         .iter()
@@ -3975,7 +4009,7 @@ fn snapshot(path: &str) -> Result<()> {
     canvas.clear();
     data.panel = None;
     let dialog = dialog_row("Close Tab?", &["Cancel", "Close"]);
-    let dialog_layout = Layout::from_placed(&dialog, &[], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let dialog_layout = Layout::from_placed(&dialog, &[], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.keys_with(&dialog_layout, None, Some(&data));
     save(&canvas, &std::path::Path::new(path).with_extension("dialog.png"))?;
     let app = |id: &str, name: &str, windows: &[&str]| {
@@ -3990,7 +4024,7 @@ fn snapshot(path: &str) -> Result<()> {
         ],
     };
     let row = switcher_row(&switcher);
-    let switcher_layout = Layout::from_placed(&row, &[], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let switcher_layout = Layout::from_placed(&row, &[], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.clear();
     canvas.keys_with(&switcher_layout, None, Some(&data));
     save(&canvas, &std::path::Path::new(path).with_extension("switcher.png"))?;
@@ -4084,6 +4118,7 @@ fn main() -> Result<()> {
     shell::watch(bus.clone())?;
     atspi::watch(bus.clone(), runtime.dialog_poll.clone())?;
     weather::watch(bus.clone(), runtime.plus.weather.clone())?;
+    pet::watch(bus.clone())?;
     if runtime.plus.default.iter().chain(&runtime.plus.strip).chain(runtime.plus.profiles.iter().flat_map(|p| &p.items)).any(|item| *item == ItemKind::NextEvent) {
         calendar::watch(bus.clone())?;
     }
@@ -4211,6 +4246,9 @@ fn main() -> Result<()> {
                     events::Ext::Dialog(dialog) => runtime.dialog_changed(dialog)?,
                     events::Ext::Apps(apps) => runtime.apps_listed(apps)?,
                     events::Ext::Art(url, gray) => runtime.art_loaded(url, gray)?,
+                    events::Ext::PetFrame(sprite) => runtime.pet_frame(sprite)?,
+                    events::Ext::PetText(text) => runtime.pet_text(text)?,
+                    events::Ext::PetGone => runtime.pet_gone()?,
                     events::Ext::Toggles(states) => runtime.toggles_changed(states)?,
                     events::Ext::Events(events) => runtime.events_changed(events)?,
                     events::Ext::Weather(weather) => runtime.weather_changed(weather)?,

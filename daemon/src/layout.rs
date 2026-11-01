@@ -109,6 +109,8 @@ pub enum ItemKind {
     Screenshot,
     Toggle(Toggle),
     NowPlaying,
+    /// Trazko pet and its balloon.
+    Pet,
     Clock,
     Weather,
     Battery,
@@ -224,6 +226,8 @@ pub struct Favorite {
 pub struct LayoutConfig {
     pub strip: Vec<ItemKind>,
     pub strip_slots: Vec<Slot>,
+    /// 0-based first column of the control strip; None = flush right (as before).
+    pub strip_col: Option<u16>,
     pub default: Vec<ItemKind>,
     pub default_slots: Vec<Slot>,
     pub profiles: Vec<Profile>,
@@ -240,6 +244,7 @@ pub struct LayoutConfig {
 #[serde(deny_unknown_fields)]
 struct File {
     strip: Option<Vec<toml::Value>>,
+    strip_col: Option<u16>,
     default: Option<Vec<toml::Value>>,
     #[serde(default)]
     profile: Vec<ProfileRaw>,
@@ -504,6 +509,7 @@ fn kind(raw: ItemRaw) -> Result<ItemKind> {
         "volume" => simple(ItemKind::Volume),
         "screenshot" => simple(ItemKind::Screenshot),
         "now_playing" => simple(ItemKind::NowPlaying),
+        "pet" => simple(ItemKind::Pet),
         "clock" => simple(ItemKind::Clock),
         "weather" => simple(ItemKind::Weather),
         "battery" => simple(ItemKind::Battery),
@@ -631,6 +637,10 @@ const MAX_CONTROLS_PX: u16 = 2170;
 /// A broken section falls back to its defaults without costing the user's
 /// profiles and keys, as a broken item only costs itself.
 fn sanitize(file: &mut File) {
+    if file.strip_col.is_some_and(|c| !(1..=GRID_COLS).contains(&c)) {
+        eprintln!("kait2en-touchbar-plus: invalid strip_col, using automatic");
+        file.strip_col = None;
+    }
     let Ok(template) = toml::from_str::<File>(TEMPLATE) else { return };
     if !weather_ok(&file.weather) {
         eprintln!("kait2en-touchbar-plus: invalid [weather], using defaults");
@@ -729,11 +739,15 @@ fn build(mut file: File, strict: bool) -> Result<LayoutConfig> {
             ),
         }
     }
+    if let Some(c) = file.strip_col {
+        anyhow::ensure!((1..=GRID_COLS).contains(&c), "strip_col must be 1 to {GRID_COLS}");
+    }
     let (strip, strip_slots) = items(strip, strict, "strip")?;
     let (default, default_slots) = items(default, strict, "default")?;
     Ok(LayoutConfig {
         strip,
         strip_slots,
+        strip_col: file.strip_col.map(|c| c - 1),
         default,
         default_slots,
         profiles,
@@ -783,6 +797,20 @@ mod tests {
         let config = parse("default = [ { type = \"spacer\", col = 5, span = 3 } ]", true).unwrap();
         assert_eq!(config.default, vec![ItemKind::Spacer]);
         assert_eq!(config.default_slots, vec![Slot { col: Some(4), span: Some(3) }]);
+    }
+
+    #[test]
+    fn pet_is_a_plain_item() {
+        let config = parse("strip = [ { type = \"pet\", col = 9, span = 8 } ]", true).unwrap();
+        assert_eq!(config.strip, vec![ItemKind::Pet]);
+    }
+
+    #[test]
+    fn strip_col_is_one_based_and_validated() {
+        let config = parse("strip_col = 17\nstrip = [ { type = \"clock\" } ]", true).unwrap();
+        assert_eq!(config.strip_col, Some(16));
+        assert!(parse("strip_col = 0", true).is_err());
+        assert!(parse("strip_col = 25", true).is_err());
     }
 
     #[test]

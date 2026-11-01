@@ -63,6 +63,7 @@ pub enum WidgetKind {
     NextEvent,
     Pomodoro,
     NowPlaying,
+    Pet,
 }
 
 /// What the layout needs to know about the world to pick its keys.
@@ -222,6 +223,7 @@ fn widget_cols(kind: WidgetKind) -> u16 {
         | WidgetKind::Fan => 2,
         WidgetKind::Network | WidgetKind::NextEvent => 4,
         WidgetKind::NowPlaying => 8,
+        WidgetKind::Pet => 4,
     }
 }
 
@@ -402,6 +404,7 @@ fn item_cells(items: &[ItemKind], slots: &[Slot], base: usize, ctx: &LayoutCtx) 
             ItemKind::Network => widget(WidgetKind::Network),
             ItemKind::NextEvent => widget(WidgetKind::NextEvent),
             ItemKind::Pomodoro => widget(WidgetKind::Pomodoro),
+            ItemKind::Pet => widget(WidgetKind::Pet),
         };
         groups.push((index, cells));
     }
@@ -417,7 +420,7 @@ fn item_cols(groups: &mut [(usize, Vec<Cell>)], slots: &[Slot]) {
             continue;
         };
         // The now playing widget always keeps room for its cover and a line.
-        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying))) {
+        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying | WidgetKind::Pet))) {
             2
         } else {
             cells.len() as u16
@@ -655,7 +658,7 @@ impl Layout {
         physical_escape: bool,
         ctx: &LayoutCtx,
     ) -> Self {
-        Self::from_placed(app, &[], strip, &[], width, physical_escape, ctx)
+        Self::from_placed(app, &[], strip, &[], None, width, physical_escape, ctx)
     }
 
     /// Like `from_items`, with each item's grid slot (column and width).
@@ -664,6 +667,7 @@ impl Layout {
         app_slots: &[Slot],
         strip: &[ItemKind],
         strip_slots: &[Slot],
+        strip_col: Option<u16>,
         width: u16,
         physical_escape: bool,
         ctx: &LayoutCtx,
@@ -697,7 +701,7 @@ impl Layout {
         let mut strip_groups = item_cells(strip, strip_slots, app.len(), ctx);
         item_cols(&mut strip_groups, strip_slots);
         let strip_cols: u16 = strip_groups.iter().flat_map(|(_, cells)| cells).map(|cell| cell.cols).sum();
-        let strip_first = GRID_COLS.saturating_sub(strip_cols).max(zone_end);
+        let strip_first = strip_col.unwrap_or_else(|| GRID_COLS.saturating_sub(strip_cols)).max(zone_end);
         let strip_starts = item_starts(&strip_groups, strip_slots, strip_first);
         let strip_end = strip_groups
             .iter()
@@ -713,7 +717,10 @@ impl Layout {
         let span = |from: u16, cols: u16| {
             (x(from).round() as u16, (x(from + cols) - f32::from(KEY_GAP)).round() as u16)
         };
-        let strip_left = strip_starts.first().map(|at| span(*at, 1).0);
+        let strip_left = match strip_col {
+            Some(_) => Some(span(strip_first, 1).0),
+            None => strip_starts.first().map(|at| span(*at, 1).0),
+        };
         let zone_limit = strip_left.map_or(edge, |left| left.saturating_sub(GROUP_GAP));
         for (groups, starts) in [(zone_groups, zone_starts), (strip_groups, strip_starts)] {
             for ((_, cells), at) in groups.into_iter().zip(starts) {
@@ -928,6 +935,12 @@ impl Canvas {
 
     /// Icon and ASCII value centered in the button's span, no outline.
     fn widget(&mut self, button: &Button, kind: WidgetKind, data: &WidgetData) {
+        if kind == WidgetKind::Pet {
+            if let Some(sprite) = &data.pet {
+                self.pet(button, sprite, &data.pet_text);
+            }
+            return;
+        }
         if kind == WidgetKind::NowPlaying {
             if let Some(view) = &data.now_playing {
                 self.now_playing(button, view);
@@ -989,6 +1002,24 @@ impl Canvas {
 
     /// Centered `App: text` message, for notifications and timer alerts.
 
+    /// The pet at the left of its span and its balloon on one line beside it.
+    fn pet(&mut self, button: &Button, sprite: &crate::pet::Sprite, text: &str) {
+        let (left, right) = (f32::from(button.left), f32::from(button.right));
+        let top = ((i32::from(self.height) - sprite.height as i32) / 2).max(0);
+        self.blit_rgba(i32::from(button.left), top, sprite.width, &sprite.rgba);
+        let text_left = left + sprite.width as f32 + 8.0;
+        if text.is_empty() || right <= text_left {
+            return;
+        }
+        let line = self.fit_ascii(text, NP_FONT_SIZE, right - text_left, FONT_WEIGHT);
+        let baseline = (f32::from(self.height) / 2.0 + self.cap_height(NP_FONT_SIZE) / 2.0).round();
+        let mut path = PathBuilder::new();
+        self.append_text(&mut path, text_left, baseline, &line, NP_FONT_SIZE, FONT_WEIGHT);
+        if let Some(path) = path.finish() {
+            self.fill(&path, self.color);
+        }
+    }
+
     /// Cover, `Artist - Title`, progress bar and the optional visualizer.
     fn now_playing(&mut self, button: &Button, view: &NowPlayingView) {
         let (left, right) = (f32::from(button.left), f32::from(button.right));
@@ -1035,13 +1066,18 @@ impl Canvas {
             .or_insert_with(|| crate::apps::load_rgba(std::path::Path::new(path), SIZE).map(Into::into))
             .clone();
         let Some(pixels) = pixels else { return };
+        let (left, top) = ((cx - SIZE as f32 / 2.0) as i32, (cy - SIZE as f32 / 2.0) as i32);
+        self.blit_rgba(left, top, SIZE, &pixels);
+    }
+
+    /// Straight RGBA pixels of the given width over the canvas, dimmed with the key level.
+    fn blit_rgba(&mut self, left: i32, top: i32, size: u32, pixels: &[u8]) {
         let level = u32::from(self.color.0.max(self.color.1).max(self.color.2)) * 100
             / u32::from(self.base.0.max(self.base.1).max(self.base.2)).max(1);
-        let (left, top) = ((cx - SIZE as f32 / 2.0) as i32, (cy - SIZE as f32 / 2.0) as i32);
         let width = self.width as i32;
         let target = self.pixmap.pixels_mut();
         for (index, rgba) in pixels.chunks_exact(4).enumerate() {
-            let (x, y) = (left + (index as u32 % SIZE) as i32, top + (index as u32 / SIZE) as i32);
+            let (x, y) = (left + (index as u32 % size) as i32, top + (index as u32 / size) as i32);
             if x < 0 || y < 0 || x >= width || y >= i32::from(self.height) || rgba[3] == 0 {
                 continue;
             }
@@ -1826,7 +1862,7 @@ mod tests {
             // Overlaps the previous item, so it is pushed after it.
             Slot { col: Some(5), span: None },
         ];
-        let layout = Layout::from_placed(&items, &slots, &[], &[], 2008, true, &LayoutCtx::default());
+        let layout = Layout::from_placed(&items, &slots, &[], &[], None, 2008, true, &LayoutCtx::default());
         let pitch = f32::from(2008 - 2 * KEY_GAP + KEY_GAP) / 24.0;
         let at = |index: usize| f32::from(layout.buttons[index].left);
         let width = |index: usize| f32::from(layout.buttons[index].right - layout.buttons[index].left);
@@ -1835,6 +1871,16 @@ mod tests {
         assert!((width(1) - (4.0 * pitch - f32::from(KEY_GAP))).abs() <= 2.0);
         assert!((at(2) - at(1) - 4.0 * pitch).abs() <= 2.0);
         assert!(layout.buttons.windows(2).all(|pair| pair[0].right < pair[1].left));
+    }
+
+    #[test]
+    fn strip_col_fixes_strip_start() {
+        let strip = [ItemKind::Screenshot];
+        let layout = Layout::from_placed(&[], &[], &strip, &[], Some(12), 2008, true, &LayoutCtx::default());
+        let pitch = f32::from(2008 - 2 * KEY_GAP + KEY_GAP) / 24.0;
+        let left = f32::from(layout.buttons[0].left);
+        assert!((left - (f32::from(KEY_GAP) + 12.0 * pitch)).abs() <= 2.0, "{left}");
+        assert!(layout.zone.1 < layout.buttons[0].left);
     }
 
     #[test]

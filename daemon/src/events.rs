@@ -50,6 +50,12 @@ pub enum Ext {
     Events(Vec<crate::calendar::Event>),
     /// The dialog open in the focused window, or none.
     Dialog(Option<crate::atspi::Dialog>),
+    /// A new frame of the Trazko pet, already scaled.
+    PetFrame(crate::pet::Sprite),
+    /// The pet's balloon; empty without text.
+    PetText(String),
+    /// The pet closed or is not on the bus.
+    PetGone,
 }
 
 #[derive(Clone)]

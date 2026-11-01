@@ -40,6 +40,7 @@ EN = {
     "Captura de pantalla": "Screenshot",
     "Interruptor": "Switch",
     "Canción actual": "Now playing",
+    "Mascota (Trazko)": "Trazko pet",
     "Reloj": "Clock",
     "Clima": "Weather",
     "Batería": "Battery",
@@ -183,9 +184,14 @@ EN = {
     "Sin ítems: use «Agregar».": "No items: use “Add”.",
     "Predeterminado": "Default",
     "Paleta": "Palette",
-    "Agregar a:": "Add to:",
-    "Zona de app": "App zone",
-    "Strip fijo": "Fixed strip",
+    "Arrastre a la barra: a la izquierda del divisor va a la zona de app; a la derecha, al strip fijo. Con un clic se agrega a la zona de app, o al strip si tiene un ítem del strip seleccionado.": "Drag onto the bar: left of the divider goes to the app zone; right of it, to the fixed strip. A click adds to the app zone, or to the strip if a strip item is selected.",
+    "No hay espacio en el strip: arrastre el divisor a la izquierda o quite un ítem.": "No room in the strip: drag the divider left or remove an item.",
+    "No hay espacio en la zona de app: quite o achique un ítem, o arrastre el divisor a la derecha.": "No room in the app zone: remove or shrink an item, or drag the divider right.",
+    "Se quitaron ítems que no cabían: ": "Items that did not fit were removed: ",
+    "Cambiar de app": "Switch app",
+    "Zona de app · cambia según el perfil": "App zone · changes per profile",
+    "Strip fijo · igual en todos los perfiles": "Fixed strip · same in every profile",
+    "Divisor entre zona de app y strip": "Divider between app zone and strip",
     "Tecla personalizada…": "Custom key…",
     "Aplicación…": "Application…",
     "Inspector": "Inspector",
@@ -245,6 +251,7 @@ TYPE_LABELS = {
     "toggle": _("Interruptor"),
     "controls": _("Controles (volumen, brillo y luz del teclado)"),
     "now_playing": _("Canción actual"),
+    "pet": _("Mascota (Trazko)"),
     "clock": _("Reloj"),
     "weather": _("Clima"),
     "battery": _("Batería"),
@@ -257,6 +264,7 @@ TYPE_LABELS = {
     "pomodoro": _("Pomodoro"),
     "emoji": _("Emojis"),
     "windows": _("Ventanas"),
+    "apps": _("Cambiar de app"),
     "spacer": _("Espacio"),
 }
 TOGGLES = {
@@ -299,6 +307,8 @@ def dump_layout(data):
         f"strip = {tv(data['strip'])}",
         f"default = {tv(data['default'])}",
     ]
+    if "strip_col" in data:
+        out.insert(2, f"strip_col = {tv(data['strip_col'])}")
     for profile in data.get("profile", []):
         out += [
             "",
