@@ -9,6 +9,13 @@ use tiny_skia::PathBuilder;
 use crate::renderer::Shape;
 
 pub static ICONS: &[(&str, &str)] = &[
+    ("printer", include_str!("../icons/lucide/printer.svg")),
+    ("text-cursor-input", include_str!("../icons/lucide/text-cursor-input.svg")),
+    ("delete", include_str!("../icons/lucide/delete.svg")),
+    ("arrow-left-to-line", include_str!("../icons/lucide/arrow-left-to-line.svg")),
+    ("arrow-right-to-line", include_str!("../icons/lucide/arrow-right-to-line.svg")),
+    ("chevrons-up", include_str!("../icons/lucide/chevrons-up.svg")),
+    ("chevrons-down", include_str!("../icons/lucide/chevrons-down.svg")),
     ("app-window", include_str!("../icons/lucide/app-window.svg")),
     ("layout-grid", include_str!("../icons/lucide/layout-grid.svg")),
     ("arrow-down-up", include_str!("../icons/lucide/arrow-down-up.svg")),

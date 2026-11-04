@@ -107,6 +107,17 @@ EN = {
     "Barra": "Bar",
     "Touch ID": "Touch ID",
     "Estilo": "Look",
+    "Estilo de teclas": "Key style",
+    "Contorno": "Outline",
+    "Tintado": "Tinted",
+    "Sólido": "Solid",
+    "Neón": "Neon",
+    "Texto con borde, como ahora.": "Outlined text, as before.",
+    "Fondo tenue y borde del color de cada tecla.": "Faint background and a border in each key's color.",
+    "Tecla rellena de color con texto oscuro.": "Key filled with color and dark text.",
+    "Fondo negro con borde de color brillante.": "Black background with a bright colored border.",
+    "Teclas F": "F keys",
+    "Especiales": "Special",
     "Vista previa": "Preview",
     "Colores": "Colors",
     "Textos": "Texts",
@@ -589,10 +600,11 @@ def main():
 
     class Backend(QObject):
         previewReady = pyqtSignal(str)
+        keysPreviewReady = pyqtSignal(str)
 
         def __init__(self):
             super().__init__()
-            self.preview_count = 0
+            self.preview_count = {"tid": 0, "keys": 0}
             self.preview_lock = threading.Lock()
 
         @pyqtSlot(result=str)
@@ -653,32 +665,41 @@ def main():
         @pyqtSlot(str)
         def touchIdPreview(self, body):
             """Renders the Touch ID prompt (six looks, four states) off the GUI thread; the result arrives as previewReady(json)."""
-            self.preview_count += 1
-            threading.Thread(target=self._render_preview, args=(body, self.preview_count), daemon=True).start()
+            self._start_preview(body, "--snapshot-touchid", "tid", self.previewReady)
 
-        def _render_preview(self, body, seq):
+        @pyqtSlot(str)
+        def keysPreview(self, body):
+            """Renders the F and special layers in the four key styles; the result arrives as keysPreviewReady(json)."""
+            self._start_preview(body, "--snapshot-keys", "keys", self.keysPreviewReady)
+
+        def _start_preview(self, body, flag, stem, signal):
+            self.preview_count[stem] += 1
+            seq = self.preview_count[stem]
+            threading.Thread(target=self._render_preview, args=(body, seq, flag, stem, signal), daemon=True).start()
+
+        def _render_preview(self, body, seq, flag, stem, signal):
             with self.preview_lock:
-                if seq != self.preview_count:  # a newer request replaced this one
+                if seq != self.preview_count[stem]:  # a newer request of this kind replaced this one
                     return
                 try:
                     cache = HOME / ".cache/touchbar-plus"
                     cache.mkdir(parents=True, exist_ok=True)
-                    prefix = cache / f"tid{seq}"
-                    config = cache / "preview-config.toml"
+                    prefix = cache / f"{stem}{seq}"
+                    config = cache / f"{stem}-preview-config.toml"
                     config.write_text(dump_flat(json.loads(body)), encoding="utf-8")
-                    result = subprocess.run([str(DAEMON), "--snapshot-touchid", str(prefix)], capture_output=True, text=True,
+                    result = subprocess.run([str(DAEMON), flag, str(prefix)], capture_output=True, text=True,
                                             timeout=20, env=dict(os.environ, KAIT2EN_TOUCHBAR_CONFIG=str(config)))
                     if result.returncode != 0:
                         answer = {"error": (result.stderr or result.stdout).strip()}
                     else:
-                        for old in cache.glob("tid*-*.png"):
-                            if not old.name.startswith(f"tid{seq}-"):
+                        for old in cache.glob(f"{stem}*-*.png"):
+                            if not old.name.startswith(f"{stem}{seq}-"):
                                 old.unlink(missing_ok=True)
                         answer = {"prefix": str(prefix), "url": QUrl.fromLocalFile(str(prefix)).toString()}
                 except Exception as error:
                     answer = {"error": str(error)}
             answer["seq"] = seq
-            self.previewReady.emit(json.dumps(answer))
+            signal.emit(json.dumps(answer))
 
         @pyqtSlot(result=str)
         def testNotice(self):

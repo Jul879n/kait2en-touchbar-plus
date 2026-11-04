@@ -41,6 +41,9 @@ enum Glyph {
     Tone(&'static str, DialogTone),
     Icon(Icon),
     Lucide(&'static str),
+    /// Hardware key (F row, special layer, esc) with its own hue; drawn as
+    /// plain text unless a color key style is set.
+    Hw { label: &'static str, icon: Option<&'static str>, hue: u32 },
     /// PNG of an application, drawn in color.
     App(&'static str),
     Widget(WidgetKind),
@@ -522,7 +525,8 @@ impl Layout {
                     LABELS
                         .into_iter()
                         .zip(keys)
-                        .map(|(label, key)| (Glyph::Text(label), key))
+                        .enumerate()
+                        .map(|(i, (label, key))| (Glyph::Hw { label, icon: None, hue: F_HUES[i] }, key))
                         .collect(),
                 );
             }
@@ -548,16 +552,16 @@ impl Layout {
                 ],
             ]),
             Mode::Special => groups.extend([
-                vec![(Glyph::Text("print"), Key::Sysrq)],
+                vec![(hw("print", Some("printer"), 0xb88cff), Key::Sysrq)],
                 vec![
-                    (Glyph::Text("insert"), Key::Insert),
-                    (Glyph::Text("delete"), Key::Delete),
+                    (hw("insert", Some("text-cursor-input"), 0x4cd964), Key::Insert),
+                    (hw("delete", Some("delete"), 0xff6b81), Key::Delete),
                 ],
                 vec![
-                    (Glyph::Text("home"), Key::Home),
-                    (Glyph::Text("end"), Key::End),
-                    (Glyph::Text("page up"), Key::PageUp),
-                    (Glyph::Text("page down"), Key::PageDown),
+                    (hw("home", Some("arrow-left-to-line"), 0x4da3ff), Key::Home),
+                    (hw("end", Some("arrow-right-to-line"), 0x4da3ff), Key::End),
+                    (hw("page up", Some("chevrons-up"), 0xff9f45), Key::PageUp),
+                    (hw("page down", Some("chevrons-down"), 0xff9f45), Key::PageDown),
                 ],
             ]),
         }
@@ -571,7 +575,7 @@ impl Layout {
             buttons.push(Button {
                 left: start,
                 right,
-                glyph: Glyph::Text("esc"),
+                glyph: hw("esc", None, 0xffc83d),
                 action: Action::Key(Key::Esc),
                 on: false,
             });
@@ -687,7 +691,7 @@ impl Layout {
             buttons.push(Button {
                 left: start,
                 right,
-                glyph: Glyph::Text("esc"),
+                glyph: hw("esc", None, 0xffc83d),
                 action: Action::Key(Key::Esc),
                 on: false,
             });
@@ -789,6 +793,14 @@ const PROMPT_RIGHT: f32 = 96.0;
 const PROMPT_ICON_SLOT: f32 = 44.0;
 const PROMPT_ICON_GAP: f32 = 14.0;
 const KEY_FONT_SIZE: f32 = 23.0;
+/// Hue of each F key: the strip's seven icon tones, cycled.
+const F_HUES: [u32; 12] = [
+    0xff6b81, 0xff9f45, 0xffc83d, 0x4cd964, 0x7fd4ff, 0x4da3ff, 0xb88cff, 0xff6b81, 0xff9f45, 0xffc83d, 0x4cd964, 0x7fd4ff,
+];
+
+fn hw(label: &'static str, icon: Option<&'static str>, hue: u32) -> Glyph {
+    Glyph::Hw { label, icon, hue }
+}
 
 mod prompt;
 pub use prompt::{STATES as TOUCH_ID_STATES, TouchIdLook};
@@ -815,6 +827,8 @@ pub struct Canvas {
     color: Rgb,
     /// Draw icons with their own colors.
     pub full_color: bool,
+    /// Style of the F, special and esc keys: A outline, B tinted, C solid, D neon.
+    pub key_style: char,
     app_icons: std::collections::HashMap<&'static str, Option<std::rc::Rc<[u8]>>>,
     notice_fits: std::collections::HashMap<(String, String), notice::NoticeFit>,
     /// A key held for a long press: its index and how full its bar is (0..1).
@@ -878,6 +892,7 @@ impl Canvas {
             base: Rgb::from_u32(key_color),
             color: Rgb::from_u32(key_color),
             full_color: false,
+            key_style: 'A',
             app_icons: std::collections::HashMap::new(),
             notice_fits: std::collections::HashMap::new(),
             hold_progress: None,
@@ -1322,6 +1337,12 @@ impl Canvas {
         let cy = f32::from(self.height) / 2.0;
         let (left, right) = (f32::from(button.left), f32::from(button.right));
         let active = active || button.on;
+        if let Glyph::Hw { label, icon, hue } = button.glyph
+            && self.key_style != 'A'
+        {
+            self.hw_key(left, right, label, icon, hue, active);
+            return;
+        }
         // Dialog keys: accent and destructive ones get their own color in full
         // color; in monochrome they share the key color and only the title dims.
         let tone = match button.glyph {
@@ -1365,7 +1386,7 @@ impl Canvas {
         }
         let cx = (left + right) / 2.0;
         match button.glyph {
-            Glyph::Text(text) => {
+            Glyph::Text(text) | Glyph::Hw { label: text, .. } => {
                 let text = self.fit_ascii(text, KEY_FONT_SIZE, right - left - 12.0, FONT_WEIGHT);
                 self.center_text(cx, cy, &text, KEY_FONT_SIZE, self.color);
             }
@@ -1389,6 +1410,56 @@ impl Canvas {
         }
     }
 
+
+    /// Hardware key in one of the color styles (B tinted, C solid, D neon).
+    fn hw_key(&mut self, left: f32, right: f32, label: &str, icon: Option<&str>, hue: u32, active: bool) {
+        let top = KEY_INSET;
+        let bottom = f32::from(self.height) - KEY_INSET;
+        let cy = f32::from(self.height) / 2.0;
+        let hue = at_level(Rgb::from_u32(hue), self.color, self.base);
+        let shape = |inset: f32| rounded_rect(left + inset, top + inset, right - inset, bottom - inset, KEY_RADIUS - inset);
+        let content = match self.key_style {
+            'B' => {
+                self.fill(&shape(0.0), hue.scale(if active { 40 } else { 22 }));
+                self.stroke(&shape(KEY_OUTLINE / 2.0), hue.scale(75), KEY_OUTLINE);
+                hue
+            }
+            'C' => {
+                self.fill(&shape(0.0), if active { hue } else { hue.scale(85) });
+                at_level(Rgb(0x10, 0x10, 0x14), self.color, self.base)
+            }
+            _ => {
+                if active {
+                    self.fill(&shape(0.0), hue.scale(20));
+                }
+                self.stroke(&shape(3.0), hue.scale(30), 6.0);
+                self.stroke(&shape(1.25), hue, 2.5);
+                hue
+            }
+        };
+        let cx = (left + right) / 2.0;
+        let shapes = icon.and_then(lucide::shapes);
+        let Some(shapes) = shapes else {
+            self.center_text(cx, cy, label, KEY_FONT_SIZE, content);
+            return;
+        };
+        // Icon and label centered as a group; icon alone if they do not fit.
+        const ICON_SIZE: f32 = 0.85;
+        const ICON_WIDTH: f32 = 24.0 * ICON_SCALE * ICON_SIZE;
+        const GAP: f32 = 8.0;
+        let size = KEY_FONT_SIZE * 0.8;
+        let text_width = self.text_width_at(label, size, FONT_WEIGHT);
+        let saved = self.color;
+        self.color = content;
+        if ICON_WIDTH + GAP + text_width > right - left - 12.0 {
+            self.shapes_sized(cx, cy, shapes, BLACK, ICON_SIZE);
+        } else {
+            let start = cx - (ICON_WIDTH + GAP + text_width) / 2.0;
+            self.shapes_sized(start + ICON_WIDTH / 2.0, cy, shapes, BLACK, ICON_SIZE);
+            self.center_text(start + ICON_WIDTH + GAP + text_width / 2.0, cy, label, size, content);
+        }
+        self.color = saved;
+    }
 
     /// Converts the premultiplied, always opaque RGBA pixmap into XRGB8888.
     fn flush(&mut self) {
@@ -1879,6 +1950,24 @@ mod tests {
         let left = f32::from(layout.buttons[0].left);
         assert!((left - (f32::from(KEY_GAP) + 12.0 * pitch)).abs() <= 2.0, "{left}");
         assert!(layout.zone.1 < layout.buttons[0].left);
+    }
+
+    #[test]
+    fn solid_style_colors_special_keys() {
+        let mut canvas = Canvas::new(2008, 60, 0x00dce6ff).unwrap();
+        canvas.key_style = 'C';
+        let layout = Layout::new(Mode::Special, 2008, false);
+        canvas.keys_with(&layout, None, None);
+        let print = layout
+            .buttons
+            .iter()
+            .find(|button| matches!(button.action, Action::Key(Key::Sysrq)))
+            .unwrap();
+        // Near the left edge, clear of the icon and label.
+        let x = usize::from(print.left) + 4;
+        let pixel = canvas.pixels[30 * usize::from(canvas.width) + x];
+        let (r, g, b) = ((pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255);
+        assert!(r != g || g != b, "{r} {g} {b}");
     }
 
     #[test]

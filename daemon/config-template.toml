@@ -72,6 +72,9 @@ language = "auto"
 # Color de los íconos: mono (color de teclas) o full (un color por ícono y apps a color).
 icon_color = "mono"
 
+# Estilo de las teclas F, especiales y esc: A contorno, B tintado, C sólido, D neón.
+key_style = "A"
+
 # Pantalla de Touch ID. Estilo A a F (F = resplandor desde el sensor).
 touch_id_style = "F"
 # Color por estado: "auto" sigue el color de las teclas, o #rrggbb.

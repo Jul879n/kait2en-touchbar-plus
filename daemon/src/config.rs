@@ -49,6 +49,8 @@ pub struct Config {
     pub language: String,
     /// `mono` (key color) or `full` (a color per icon, app icons in color).
     pub icon_color: String,
+    /// Style of the F, special and esc keys: `A` outline, `B` tinted, `C` solid, `D` neon.
+    pub key_style: String,
     /// Touch ID prompt: look `A` to `F`, a color per state (`auto` follows
     /// the key color), a text per state (empty uses the language) and motion.
     pub touch_id_style: String,
@@ -98,6 +100,7 @@ impl Default for Config {
             hold_slider_ms: 400,
             language: "auto".into(),
             icon_color: "mono".into(),
+            key_style: "A".into(),
             touch_id_style: "F".into(),
             touch_id_color_waiting: "auto".into(),
             touch_id_color_retry: "#ff9f0a".into(),
@@ -196,6 +199,10 @@ impl Config {
         anyhow::ensure!(
             matches!(self.icon_color.as_str(), "mono" | "full"),
             "icon_color must be mono or full"
+        );
+        anyhow::ensure!(
+            matches!(self.key_style.as_str(), "A" | "B" | "C" | "D"),
+            "key_style must be A, B, C or D"
         );
         anyhow::ensure!(
             matches!(self.touch_id_style.as_str(), "A" | "B" | "C" | "D" | "E" | "F"),
@@ -362,11 +369,15 @@ mod tests {
         assert_eq!(config.off_after_ms, 300_000);
         assert_eq!(config.hold_slider_ms, 400);
         assert_eq!(config.notice_hold_ms, 4_500);
+        assert_eq!(config.key_style, "A");
         let mut bad: Config = toml::from_str("dim_after_ms = 500").unwrap();
         let error = bad.validate().unwrap_err().to_string();
         assert!(error.contains("dim_after_ms must be"), "{error}");
         let mut bad: Config = toml::from_str("off_after_ms = 30000").unwrap();
         let error = bad.validate().unwrap_err().to_string();
         assert!(error.contains("off_after_ms must be"), "{error}");
+        let mut bad: Config = toml::from_str("key_style = \"Z\"").unwrap();
+        let error = bad.validate().unwrap_err().to_string();
+        assert!(error.contains("key_style must be"), "{error}");
     }
 }

@@ -604,6 +604,7 @@ impl Runtime {
         let (width, height) = display.dimensions();
         let mut canvas = Canvas::new(width, height, canvas_color(&config))?;
         canvas.full_color = config.icon_color == "full";
+        canvas.key_style = config.key_style.chars().next().unwrap_or('A');
         display.present(&canvas.pixels, width, height)?;
         let mut backlight = Backlight::open()?;
         backlight.set(0)?;
@@ -3924,19 +3925,39 @@ fn snapshot_touch_id(prefix: &str, styles: &str) -> Result<()> {
         look.style = style;
         for state in renderer::TOUCH_ID_STATES {
             canvas.touch_id(&look, state, 0.7, None, false);
-            let mut rgb = Vec::with_capacity(canvas.pixels.len() * 3);
-            for pixel in &canvas.pixels {
-                rgb.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
-            }
-            image::save_buffer(
-                format!("{prefix}-{style}-{state}.png"),
-                &rgb,
-                u32::from(canvas.width),
-                u32::from(canvas.height),
-                image::ExtendedColorType::Rgb8,
-            )?;
+            save_png(&canvas, &format!("{prefix}-{style}-{state}.png"))?;
         }
     }
+    Ok(())
+}
+
+/// `<prefix>-<style>-<layer>.png` of the F and special layers in each key style.
+fn snapshot_keys(prefix: &str, styles: &str) -> Result<()> {
+    let config = Config::load()?;
+    let mut canvas = Canvas::new(2008, 60, canvas_color(&config))?;
+    canvas.full_color = config.icon_color == "full";
+    for style in styles.chars() {
+        canvas.key_style = style;
+        for (mode, name) in [(Mode::Function, "function"), (Mode::Special, "special")] {
+            canvas.keys_with(&Layout::new(mode, 2008, false), None, None);
+            save_png(&canvas, &format!("{prefix}-{style}-{name}.png"))?;
+        }
+    }
+    Ok(())
+}
+
+fn save_png(canvas: &Canvas, path: &str) -> Result<()> {
+    let mut rgb = Vec::with_capacity(canvas.pixels.len() * 3);
+    for pixel in &canvas.pixels {
+        rgb.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
+    }
+    image::save_buffer(
+        path,
+        &rgb,
+        u32::from(canvas.width),
+        u32::from(canvas.height),
+        image::ExtendedColorType::Rgb8,
+    )?;
     Ok(())
 }
 
@@ -3945,6 +3966,7 @@ fn snapshot(path: &str) -> Result<()> {
     let plus = layout::load();
     let mut canvas = Canvas::new(2008, 60, canvas_color(&config))?;
     canvas.full_color = config.icon_color == "full";
+    canvas.key_style = config.key_style.chars().next().unwrap_or('A');
     let ctx = LayoutCtx { player_active: true, ..LayoutCtx::default() };
     let mut data = widgets::WidgetData {
         clock: "19:45".into(),
@@ -4081,6 +4103,13 @@ fn main() -> Result<()> {
             .context("--snapshot-touchid needs an output prefix")?;
         let styles = std::env::args().nth(position + 2).unwrap_or_else(|| "ABCDEF".into());
         return snapshot_touch_id(&prefix, &styles);
+    }
+    if let Some(position) = std::env::args().position(|arg| arg == "--snapshot-keys") {
+        let prefix = std::env::args()
+            .nth(position + 1)
+            .context("--snapshot-keys needs an output prefix")?;
+        let styles = std::env::args().nth(position + 2).unwrap_or_else(|| "ABCD".into());
+        return snapshot_keys(&prefix, &styles);
     }
     if let Some(position) = std::env::args().position(|arg| arg == "--snapshot") {
         let path = std::env::args()
