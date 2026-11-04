@@ -34,6 +34,7 @@ pub struct Config {
     pub show_track_changes: bool,
     pub always_on: bool,
     pub dim_after_ms: u64,
+    pub off_after_ms: u64,
     pub dim_brightness: u32,
     pub pixel_shift: bool,
     pub pixel_shift_interval_ms: u64,
@@ -85,7 +86,8 @@ impl Default for Config {
             activity_timeout_ms: 30_000,
             show_track_changes: true,
             always_on: true,
-            dim_after_ms: 120_000,
+            dim_after_ms: 60_000,
+            off_after_ms: 300_000,
             dim_brightness: 1,
             pixel_shift: true,
             pixel_shift_interval_ms: 180_000,
@@ -168,6 +170,12 @@ impl Config {
         anyhow::ensure!(
             self.dim_after_ms == 0 || self.dim_after_ms >= 10_000,
             "dim_after_ms must be 0 (never) or at least 10000"
+        );
+        anyhow::ensure!(
+            self.off_after_ms == 0
+                || (self.off_after_ms >= 10_000
+                    && (self.dim_after_ms == 0 || self.off_after_ms > self.dim_after_ms)),
+            "off_after_ms must be 0 (never) or greater than dim_after_ms"
         );
         anyhow::ensure!(
             self.dim_brightness <= self.active_brightness,
@@ -350,11 +358,15 @@ mod tests {
         let mut config: Config = toml::from_str("").unwrap();
         config.validate().unwrap();
         assert!(config.always_on);
-        assert_eq!(config.dim_after_ms, 120_000);
+        assert_eq!(config.dim_after_ms, 60_000);
+        assert_eq!(config.off_after_ms, 300_000);
         assert_eq!(config.hold_slider_ms, 400);
         assert_eq!(config.notice_hold_ms, 4_500);
         let mut bad: Config = toml::from_str("dim_after_ms = 500").unwrap();
         let error = bad.validate().unwrap_err().to_string();
         assert!(error.contains("dim_after_ms must be"), "{error}");
+        let mut bad: Config = toml::from_str("off_after_ms = 30000").unwrap();
+        let error = bad.validate().unwrap_err().to_string();
+        assert!(error.contains("off_after_ms must be"), "{error}");
     }
 }

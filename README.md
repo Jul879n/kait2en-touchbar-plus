@@ -89,6 +89,15 @@ La barra se apaga cuando la pantalla se apaga o se bloquea. Un toque la enciende
 
 El perfil «Terminal» de `layout.toml` cubre Ptyxis y Ghostty (`com.mitchellh.ghostty.desktop`).
 
+## Ojos de Hilda
+
+Ítem `hilda` del layout (`{ type = "hilda", span = 4 }`; reemplaza al antiguo `pet` de Trazko). Puerto a Linux de
+[hilda-ojos](https://github.com/Jul879n/hilda-ojos): parpadea, mira a los lados, sonríe de vez en cuando (o al
+tocarla) y se duerme tras 30 s sin actividad (`org.gnome.Mutter.IdleMonitor`). Sigue el cursor mientras se mueve
+con el método `GetPointer` de la extensión de GNOME (hay que cerrar sesión para cargarla); sin ella, solo mira al azar.
+Desde unos 290 px de ancho usa el cuadro ancho (5:1). Los cuadros de `daemon/hilda/` salen de `componer.py` de
+hilda-ojos, reducidos a 60 px de alto, y van incrustados en el binario.
+
 ## Notas de la interfaz D-Bus
 
 - `InsertText` pega el texto y por eso pisa el portapapeles.

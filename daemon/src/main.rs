@@ -20,7 +20,7 @@ mod atspi;
 mod mpris;
 mod notify;
 mod policy;
-mod pet;
+mod hilda;
 mod pomodoro;
 mod renderer;
 mod screensaver;
@@ -507,6 +507,8 @@ struct Runtime {
     level_stop_felt: bool,
     /// OLED care: dim after idle, and move the picture one pixel now and then.
     dim_deadline_ms: Option<u64>,
+    /// Idle period after which the whole bar goes dark (a touch wakes it).
+    off_deadline_ms: Option<u64>,
     dimmed: bool,
     shift_index: usize,
     shift_next_ms: Option<u64>,
@@ -683,6 +685,7 @@ impl Runtime {
             escape_opacity: 0.0,
             escape_fade: None,
             dim_deadline_ms: None,
+            off_deadline_ms: None,
             dimmed: false,
             shift_index: 0,
             shift_next_ms: pixel_shift_first_ms,
@@ -806,10 +809,7 @@ impl Runtime {
             self.physical_escape,
             &self.layout_ctx,
         );
-        if let Some(width) = layout.pet_width() {
-            // The pet draws at 64 px high and the bar scales it to the pet's 60.
-            pet::set_width(u32::from(width) * 64 / 60);
-        }
+        hilda::set_layout(layout.hilda_width().map(u32::from));
         self.widgets.panel = self.panel.as_ref().map(|panel| {
             let button = layout
                 .buttons
@@ -1167,6 +1167,7 @@ impl Runtime {
         self.touches_armed = true;
         self.deadline_ms = None;
         self.dim_deadline_ms = None;
+        self.off_deadline_ms = None;
         self.dimmed = false;
         if self.visible && learned_off {
             self.learner
@@ -1950,9 +1951,21 @@ impl Runtime {
         }
         self.dim_deadline_ms = (self.visible && self.config.dim_after_ms > 0)
             .then(|| now + self.config.dim_after_ms);
+        self.off_deadline_ms = (self.visible && self.config.off_after_ms > 0)
+            .then(|| now + self.config.off_after_ms);
     }
 
     fn dim_if_due(&mut self, now: u64) {
+        if self.off_deadline_ms.is_some_and(|deadline| now >= deadline) {
+            self.off_deadline_ms = None;
+            if self.visible && self.touch_id == TouchIdState::Idle {
+                eprintln!("kait2en-touchbar-plus: off after idle");
+                if let Err(error) = self.go_dark(false) {
+                    eprintln!("kait2en-touchbar-plus: darken Touch Bar after idle: {error:#}");
+                }
+            }
+            return;
+        }
         if self.dim_deadline_ms.is_some_and(|deadline| now >= deadline) {
             self.dim_deadline_ms = None;
             if self.visible && self.touch_id == TouchIdState::Idle {
@@ -2456,28 +2469,10 @@ impl Runtime {
         self.refresh_widgets()
     }
 
-    fn pet_frame(&mut self, sprite: pet::Sprite) -> Result<()> {
-        self.widgets.pet = Some(sprite);
-        self.pet_changed()
-    }
-
-    fn pet_text(&mut self, text: String) -> Result<()> {
-        if self.widgets.pet_text == text {
-            return Ok(());
-        }
-        self.widgets.pet_text = text;
-        self.pet_changed()
-    }
-
-    fn pet_gone(&mut self) -> Result<()> {
-        self.widgets.pet = None;
-        self.widgets.pet_text.clear();
-        self.pet_changed()
-    }
-
-    /// The pet sets the pace: each frame it publishes redraws the bar.
-    fn pet_changed(&mut self) -> Result<()> {
-        if self.items.contains(&ItemKind::Pet) {
+    /// Hilda sets the pace: each frame she publishes redraws the bar.
+    fn hilda_frame(&mut self, sprite: hilda::Sprite) -> Result<()> {
+        self.widgets.hilda = Some(sprite);
+        if self.items.contains(&ItemKind::Hilda) {
             self.refresh_widgets()?;
         }
         Ok(())
@@ -2595,9 +2590,7 @@ impl Runtime {
             | ItemKind::Fan
             | ItemKind::Network => CustomKey::run("gnome-system-monitor"),
             ItemKind::Pomodoro => self.pomodoro_tap(now)?,
-            ItemKind::Pet => {
-                std::thread::spawn(pet::touch);
-            }
+            ItemKind::Hilda => hilda::touch(),
             ItemKind::Controls => self.toggle_panel(now),
             ItemKind::Emoji => self.open_emoji(now),
             ItemKind::Windows => {
@@ -3834,6 +3827,7 @@ impl Runtime {
             deadlines.push(deadline);
         }
         deadlines.extend(self.dim_deadline_ms);
+        deadlines.extend(self.off_deadline_ms);
         deadlines.extend(self.level_hold.as_ref().map(|hold| hold.due_ms));
         deadlines.extend(self.caffeine_due.map(|(_, _, _, due, _)| due));
         deadlines.extend(self.transient.as_ref().map(|t| t.until_ms));
@@ -4128,7 +4122,7 @@ fn main() -> Result<()> {
     shell::watch(bus.clone())?;
     atspi::watch(bus.clone(), runtime.dialog_poll.clone())?;
     weather::watch(bus.clone(), runtime.plus.weather.clone())?;
-    pet::watch(bus.clone())?;
+    hilda::watch(bus.clone())?;
     if runtime.plus.default.iter().chain(&runtime.plus.strip).chain(runtime.plus.profiles.iter().flat_map(|p| &p.items)).any(|item| *item == ItemKind::NextEvent) {
         calendar::watch(bus.clone())?;
     }
@@ -4256,9 +4250,7 @@ fn main() -> Result<()> {
                     events::Ext::Dialog(dialog) => runtime.dialog_changed(dialog)?,
                     events::Ext::Apps(apps) => runtime.apps_listed(apps)?,
                     events::Ext::Art(url, gray) => runtime.art_loaded(url, gray)?,
-                    events::Ext::PetFrame(sprite) => runtime.pet_frame(sprite)?,
-                    events::Ext::PetText(text) => runtime.pet_text(text)?,
-                    events::Ext::PetGone => runtime.pet_gone()?,
+                    events::Ext::HildaFrame(sprite) => runtime.hilda_frame(sprite)?,
                     events::Ext::Toggles(states) => runtime.toggles_changed(states)?,
                     events::Ext::Events(events) => runtime.events_changed(events)?,
                     events::Ext::Weather(weather) => runtime.weather_changed(weather)?,

@@ -5,8 +5,8 @@
 #   brightness keyboard_light playback volume key screenshot
 #   toggle(what = dnd|night_light|caffeine|wifi|bluetooth) now_playing clock
 #   weather battery cpu memory temperature fan network next_event pomodoro
-#   emoji windows spacer pet
-#   pet: mascota Trazko (cl.trazko.Mascota) y su globo; span mínimo 2, recomendado 4 a 8.
+#   emoji windows spacer hilda
+#   hilda: los ojos de Hilda (parpadean, siguen el cursor y se duermen); span mínimo 2, recomendado 4 (desde ~3,3 columnas usa el cuadro ancho).
 # Cada ítem puede llevar col (1 a 24) y span (ancho en columnas, 1 a 24): la barra es una
 # cuadrícula de 24 columnas. Sin col, sigue al ítem anterior; sin span, usa su ancho natural.
 # Ejemplo: { type = "clock", col = 21, span = 4 }. Los huecos quedan en blanco.

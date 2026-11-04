@@ -27,9 +27,8 @@ pub struct WidgetData {
     pub next_event: Option<String>,
     pub pomodoro: Option<(&'static str, String)>,
     pub now_playing: Option<NowPlayingView>,
-    /// Current frame and balloon of the Trazko pet.
-    pub pet: Option<crate::pet::Sprite>,
-    pub pet_text: String,
+    /// Current frame of Hilda's eyes.
+    pub hilda: Option<crate::hilda::Sprite>,
     pub panel: Option<PanelView>,
 }
 
@@ -103,7 +102,7 @@ pub fn view(kind: WidgetKind, data: &WidgetData) -> (Option<&'static str>, Strin
             None => (Some("timer"), "--".into()),
         },
         WidgetKind::NowPlaying => (None, String::new()),
-        WidgetKind::Pet => (None, String::new()),
+        WidgetKind::Hilda => (None, String::new()),
     }
 }
 

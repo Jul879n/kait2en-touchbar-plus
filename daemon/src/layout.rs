@@ -109,8 +109,8 @@ pub enum ItemKind {
     Screenshot,
     Toggle(Toggle),
     NowPlaying,
-    /// Trazko pet and its balloon.
-    Pet,
+    /// Hilda's eyes.
+    Hilda,
     Clock,
     Weather,
     Battery,
@@ -509,7 +509,7 @@ fn kind(raw: ItemRaw) -> Result<ItemKind> {
         "volume" => simple(ItemKind::Volume),
         "screenshot" => simple(ItemKind::Screenshot),
         "now_playing" => simple(ItemKind::NowPlaying),
-        "pet" => simple(ItemKind::Pet),
+        "hilda" => simple(ItemKind::Hilda),
         "clock" => simple(ItemKind::Clock),
         "weather" => simple(ItemKind::Weather),
         "battery" => simple(ItemKind::Battery),
@@ -604,9 +604,11 @@ fn parse(body: &str, strict: bool) -> Result<LayoutConfig> {
         let template: File = toml::from_str(TEMPLATE)?;
         build(template, false)
     };
+    let missing_default = file.default.is_none();
     let mut config = build(file, strict)?;
-    if config.default.is_empty() {
-        // An empty app zone would leave the bar without media keys.
+    if missing_default && config.default.is_empty() {
+        // A file without `default` would leave the bar without media keys; an explicit `default = []`
+        // is the user's choice of an empty zone (the controls button may live in the strip).
         let template = fallback()?;
         config.default = template.default;
         config.default_slots = template.default_slots;
@@ -800,9 +802,16 @@ mod tests {
     }
 
     #[test]
-    fn pet_is_a_plain_item() {
-        let config = parse("strip = [ { type = \"pet\", col = 9, span = 8 } ]", true).unwrap();
-        assert_eq!(config.strip, vec![ItemKind::Pet]);
+    fn explicit_empty_default_stays_empty() {
+        let config = parse("default = []\nstrip = [ { type = \"controls\" } ]", true).unwrap();
+        assert!(config.default.is_empty());
+        assert!(!parse("strip = []", true).unwrap().default.is_empty());
+    }
+
+    #[test]
+    fn hilda_is_a_plain_item() {
+        let config = parse("strip = [ { type = \"hilda\", col = 9, span = 8 } ]", true).unwrap();
+        assert_eq!(config.strip, vec![ItemKind::Hilda]);
     }
 
     #[test]

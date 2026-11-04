@@ -50,7 +50,10 @@ always_on = true
 # Apagar la barra al bloquear o apagarse la pantalla. Un toque la enciende 2 min.
 screen_lock_dark = true
 # Atenuar tras este tiempo sin uso (0 = nunca) al nivel dim_brightness.
-dim_after_ms = 120000
+dim_after_ms = 60000
+# Apagar la barra tras este tiempo sin uso del equipo (0 = nunca). Tocarla la
+# reactiva. Debe ser mayor que dim_after_ms.
+off_after_ms = 300000
 dim_brightness = 1
 # Mover la imagen 1 px cada intervalo para proteger el OLED.
 pixel_shift = true

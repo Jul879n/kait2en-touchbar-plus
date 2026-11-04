@@ -63,7 +63,7 @@ pub enum WidgetKind {
     NextEvent,
     Pomodoro,
     NowPlaying,
-    Pet,
+    Hilda,
 }
 
 /// What the layout needs to know about the world to pick its keys.
@@ -223,7 +223,7 @@ fn widget_cols(kind: WidgetKind) -> u16 {
         | WidgetKind::Fan => 2,
         WidgetKind::Network | WidgetKind::NextEvent => 4,
         WidgetKind::NowPlaying => 8,
-        WidgetKind::Pet => 8,
+        WidgetKind::Hilda => 4,
     }
 }
 
@@ -404,7 +404,7 @@ fn item_cells(items: &[ItemKind], slots: &[Slot], base: usize, ctx: &LayoutCtx) 
             ItemKind::Network => widget(WidgetKind::Network),
             ItemKind::NextEvent => widget(WidgetKind::NextEvent),
             ItemKind::Pomodoro => widget(WidgetKind::Pomodoro),
-            ItemKind::Pet => widget(WidgetKind::Pet),
+            ItemKind::Hilda => widget(WidgetKind::Hilda),
         };
         groups.push((index, cells));
     }
@@ -420,7 +420,7 @@ fn item_cols(groups: &mut [(usize, Vec<Cell>)], slots: &[Slot]) {
             continue;
         };
         // The now playing widget always keeps room for its cover and a line.
-        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying | WidgetKind::Pet))) {
+        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying | WidgetKind::Hilda))) {
             2
         } else {
             cells.len() as u16
@@ -476,11 +476,11 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Width in pixels of the pet item, if the layout has one: the pet draws its own frames to that size.
-    pub fn pet_width(&self) -> Option<u16> {
+    /// Width in pixels of Hilda's item, if the layout has one: it picks its frames by that size.
+    pub fn hilda_width(&self) -> Option<u16> {
         self.buttons
             .iter()
-            .find(|button| matches!(button.glyph, Glyph::Widget(WidgetKind::Pet)))
+            .find(|button| matches!(button.glyph, Glyph::Widget(WidgetKind::Hilda)))
             .map(|button| button.right.saturating_sub(button.left))
     }
 
@@ -799,7 +799,7 @@ pub use notice::{NoticeCard, NoticeIcon, NoticeMotion, SCROLL_END_MS, SCROLL_PAU
 /// every key gets the same optical margin.
 const ICON_SCALE: f32 = 1.3;
 const ICON_STROKE: f32 = 2.3;
-const KEY_INSET: f32 = 0.0;
+const KEY_INSET: f32 = 1.0;
 const KEY_RADIUS: f32 = 8.0;
 const KEY_OUTLINE: f32 = 1.5;
 
@@ -943,9 +943,9 @@ impl Canvas {
 
     /// Icon and ASCII value centered in the button's span, no outline.
     fn widget(&mut self, button: &Button, kind: WidgetKind, data: &WidgetData) {
-        if kind == WidgetKind::Pet {
-            if let Some(sprite) = &data.pet {
-                self.pet(button, sprite, &data.pet_text);
+        if kind == WidgetKind::Hilda {
+            if let Some(sprite) = &data.hilda {
+                self.hilda(button, sprite);
             }
             return;
         }
@@ -1010,22 +1010,12 @@ impl Canvas {
 
     /// Centered `App: text` message, for notifications and timer alerts.
 
-    /// The pet at the left of its span and its balloon on one line beside it.
-    fn pet(&mut self, button: &Button, sprite: &crate::pet::Sprite, text: &str) {
-        let (left, right) = (f32::from(button.left), f32::from(button.right));
+    /// Hilda's eyes centered in their span.
+    fn hilda(&mut self, button: &Button, sprite: &crate::hilda::Sprite) {
+        let span = i32::from(button.right.saturating_sub(button.left));
+        let left = i32::from(button.left) + (span - sprite.width as i32).max(0) / 2;
         let top = ((i32::from(self.height) - sprite.height as i32) / 2).max(0);
-        self.blit_rgba(i32::from(button.left), top, sprite.width, &sprite.rgba);
-        let text_left = left + sprite.width as f32 + 8.0;
-        if text.is_empty() || right <= text_left {
-            return;
-        }
-        let line = self.fit_ascii(text, NP_FONT_SIZE, right - text_left, FONT_WEIGHT);
-        let baseline = (f32::from(self.height) / 2.0 + self.cap_height(NP_FONT_SIZE) / 2.0).round();
-        let mut path = PathBuilder::new();
-        self.append_text(&mut path, text_left, baseline, &line, NP_FONT_SIZE, FONT_WEIGHT);
-        if let Some(path) = path.finish() {
-            self.fill(&path, self.color);
-        }
+        self.blit_rgba(left, top, sprite.width, &sprite.rgba);
     }
 
     /// Cover, `Artist - Title`, progress bar and the optional visualizer.

@@ -41,9 +41,15 @@ PageColumn {
         }
         StepRow {
             title: app.tt("Atenuar tras (segundos, 0 = nunca)")
-            value: app.get(page.cfg, "dim_after_ms", 120000) / 1000
+            value: app.get(page.cfg, "dim_after_ms", 60000) / 1000
             from: 0; to: 3600; step: 10
             onMoved: (v) => { page.cfg.dim_after_ms = v * 1000; app.bump() }
+        }
+        StepRow {
+            title: app.tt("Apagar tras (minutos, 0 = nunca)")
+            value: app.get(page.cfg, "off_after_ms", 300000) / 60000
+            from: 0; to: 120; step: 1
+            onMoved: (v) => { page.cfg.off_after_ms = v * 60000; app.bump() }
         }
         SwitchRow {
             last: true
