@@ -88,6 +88,10 @@ const ACTIVITY_FRAME_MS: u64 = 33;
 /// value is read back repeatedly for a short while after each step.
 const LEVEL_POLL_MS: u64 = 50;
 const LEVEL_POLL_WINDOW_MS: u64 = 600;
+/// Deja terminar al hilo `level-writer` antes de releer volumen y teclado.
+const PANEL_REREAD_MS: u64 = 300;
+/// Bajo este nivel el panel escribe el brillo directo: las teclas de GNOME no bajan de su mínimo.
+const BRIGHTNESS_DIRECT_BELOW: u32 = 10;
 /// The level feedback crossfades to the other side of the fingers once
 /// they pass the middle of the bar by this much.
 const LEVEL_SIDE_HYSTERESIS_PX: f64 = 60.0;
@@ -247,6 +251,8 @@ struct Panel {
     /// Relectura del brillo real tras pulsar las teclas del sistema.
     read_ms: Option<u64>,
     read_until_ms: u64,
+    /// Relectura de volumen y teclado tras soltar −/+.
+    reread_ms: Option<u64>,
 }
 
 /// Botón −/+ del panel mantenido: repite ±1 % acelerando.
@@ -895,6 +901,7 @@ impl Runtime {
             until_ms: now + self.plus.controls.timeout_ms,
             read_ms: None,
             read_until_ms: 0,
+            reread_ms: None,
         });
     }
 
@@ -921,6 +928,22 @@ impl Runtime {
         };
         panel.until_ms = now + timeout;
         if control == layout::Control::Brightness {
+            // También al subir: las teclas del sistema saltarían varios puntos desde el mínimo.
+            if let Some(level) = panel.levels[control.index()].filter(|l| *l <= BRIGHTNESS_DIRECT_BELOW) {
+                let new = levels::stepped(level, repeat.delta);
+                if new == level {
+                    if !repeat.stop_felt {
+                        self.haptic.firm();
+                        repeat.stop_felt = true;
+                    }
+                } else {
+                    panel.levels[control.index()] = Some(new);
+                    levels::set_control(control, new);
+                    self.haptic.click();
+                    repeat.stop_felt = false;
+                }
+                return self.refresh_widgets();
+            }
             // Por las teclas del sistema: el autobrillo lo toma como cambio
             // manual (escribir directo hace que vuelva solo a su curva).
             let key = if repeat.delta > 0 { Key::BrightnessUp } else { Key::BrightnessDown };
@@ -942,8 +965,8 @@ impl Runtime {
                 }
             } else {
                 panel.levels[control.index()] = Some(new);
-                if control == layout::Control::Volume && repeat.delta > 0 {
-                    panel.muted = false;
+                if control == layout::Control::Volume {
+                    panel.muted = new == 0;
                 }
                 levels::set_control(control, new);
                 if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 || new % 5 == 0 {
@@ -972,6 +995,24 @@ impl Runtime {
     }
 
     fn panel_tick(&mut self, now: u64) -> Result<()> {
+        // Con −/+ pulsado de nuevo la relectura quedaría vieja: espera a soltar.
+        if self
+            .panel
+            .as_ref()
+            .is_some_and(|p| p.repeat.is_none() && p.reread_ms.is_some_and(|due| now >= due))
+        {
+            if let Some(panel) = self.panel.as_mut() {
+                let items = &self.plus.controls.items;
+                for control in items.iter().filter(|c| **c != layout::Control::Brightness) {
+                    panel.levels[control.index()] = levels::read_control(*control);
+                }
+                if items.contains(&layout::Control::Volume) {
+                    panel.muted = levels::volume().muted;
+                }
+                panel.reread_ms = None;
+            }
+            self.refresh_widgets()?;
+        }
         if self.panel.as_ref().and_then(|p| p.read_ms).is_some_and(|due| now >= due) {
             let slots: Vec<usize> = self
                 .plus
@@ -1218,6 +1259,10 @@ impl Runtime {
             return Ok(());
         }
         if let Some((slider, part)) = self.panel_touch(x, y) {
+            // Usar el panel cuenta como actividad, sin re-encender el teclado.
+            if self.config.activity_backlight {
+                self.activity_deadline_ms = Some(now + self.config.activity_timeout_ms);
+            }
             use renderer::PanelPart;
             let control = self.plus.controls.items.get(slider).copied();
             match part {
@@ -1403,8 +1448,8 @@ impl Runtime {
                 hold.stop_felt = false;
                 levels::set_control(control, new);
                 self.level.percent = Some(new);
-                if control == layout::Control::Volume && delta > 0 {
-                    self.level.muted = false;
+                if control == layout::Control::Volume {
+                    self.level.muted = new == 0;
                 }
                 self.level_dirty = true;
                 if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 || new % 5 == 0 {
@@ -1918,7 +1963,14 @@ impl Runtime {
 
     fn keyboard_backlight_changed(&mut self) -> Result<()> {
         if let Ok(brightness) = kbdlight::brightness() {
+            let chosen = self.backlight_fade.is_none()
+                && !self.activity_dimmed
+                && self.activity_current_brightness != Some(brightness);
             self.activity_current_brightness = Some(brightness);
+            if chosen {
+                // Un cambio ajeno al fade (panel, teclas, GNOME) es el nivel a restaurar, incluso 0.
+                self.activity_restore_brightness = Some(brightness);
+            }
             if self.activity_dimmed && self.backlight_fade.is_none() && brightness > 0 {
                 self.activity_restore_brightness = Some(brightness);
                 self.activity_dimmed = false;
@@ -2006,8 +2058,9 @@ impl Runtime {
             .is_some_and(|fade| fade.to == 0);
         if self.activity_dimmed || fading_out {
             let brightness = match self.activity_restore_brightness {
-                Some(brightness) if brightness > 0 => Some(brightness),
-                _ => match self
+                Some(0) => None, // El usuario lo dejó apagado: no se re-enciende.
+                Some(brightness) => Some(brightness),
+                None => match self
                     .activity_max_brightness
                     .map(Ok)
                     .unwrap_or_else(kbdlight::maximum_brightness)
@@ -2972,13 +3025,12 @@ impl Runtime {
         self.show_card(card, now, false)
     }
 
-    /// Shows `card`, or keeps the latest one for later while Touch ID or a
-    /// slider has the bar. `quiet` skips the haptic tap (an update).
+    /// Shows `card`, or keeps the latest one for later while Touch ID, a slider or the controls panel has the bar. `quiet` skips the haptic tap (an update).
     fn show_card(&mut self, card: renderer::NoticeCard, now: u64, quiet: bool) -> Result<()> {
         if self.screen_off() {
             return Ok(());
         }
-        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() {
+        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() || self.panel.is_some() {
             self.pending_card = Some((card, now + PENDING_CARD_MS));
             self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
             return Ok(());
@@ -3024,7 +3076,7 @@ impl Runtime {
         self.track_frame(now)
     }
 
-    /// Shows the notice kept while Touch ID or a slider was up, once they are done.
+    /// Shows the notice kept while Touch ID, a slider or the controls panel was up, once they are done.
     fn pending_card_due(&mut self, now: u64) -> Result<()> {
         if !self.pending_card_ms.is_some_and(|due| now >= due) {
             return Ok(());
@@ -3036,7 +3088,9 @@ impl Runtime {
         if now >= expires || self.screen_off() {
             return Ok(());
         }
-        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() {
+        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() || self.panel.is_some() {
+            // Con el panel en uso la tarjeta espera a que se cierre, sin caducar.
+            let expires = if self.panel.is_some() { expires.max(now + PENDING_CARD_MS) } else { expires };
             self.pending_card = Some((card, expires));
             self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
             return Ok(());
@@ -3405,6 +3459,7 @@ impl Runtime {
                 if let Some(panel) = self.panel.as_mut() {
                     panel.repeat = None;
                     panel.until_ms = now + self.plus.controls.timeout_ms;
+                    panel.reread_ms = Some(now + PANEL_REREAD_MS);
                 }
                 self.refresh_widgets()?;
             }

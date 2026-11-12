@@ -92,7 +92,29 @@ fn sink_status(wpctl: &[&str], pactl: &[&str]) -> std::io::Result<std::process::
     Ok(out.status)
 }
 
+/// El silencio lo puso el 0 % del propio slider (no un toggle del usuario).
+static MUTED_BY_ZERO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lee el volumen. Si el 0 % del slider lo silenció y otro programa lo subió, quita ese silencio.
 pub fn volume() -> Level {
+    let mut level = read_volume();
+    let flag = &MUTED_BY_ZERO;
+    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+        if !level.muted {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        } else if level.percent.is_some_and(|p| p > 0) {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            let _ = sink_status(
+                &["set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
+                &["set-sink-mute", "@DEFAULT_SINK@", "0"],
+            );
+            level.muted = false;
+        }
+    }
+    level
+}
+
+fn read_volume() -> Level {
     let wpctl = Command::new("wpctl")
         .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
         .output()
@@ -138,7 +160,7 @@ pub fn brightness() -> Level {
     let percent = screen_backlight().and_then(|path| {
         let current: u64 = read(&path, "brightness")?.parse().ok()?;
         let max: u64 = read(&path, "max_brightness")?.parse().ok()?;
-        (max > 0).then(|| ((current * 100 + max / 2) / max) as u32)
+        (max > 0).then(|| backlight_percent(current, max))
     });
     Level {
         percent,
@@ -161,6 +183,7 @@ pub fn read_control(control: Control) -> Option<u32> {
 
 /// Flips the sound's mute in the background.
 pub fn toggle_mute() {
+    MUTED_BY_ZERO.store(false, std::sync::atomic::Ordering::Relaxed);
     thread::spawn(|| {
         let _ = sink_status(
             &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
@@ -214,13 +237,28 @@ pub fn stepped(level: u32, delta: i32) -> u32 {
     (i64::from(level.min(100)) + i64::from(delta)).clamp(0, 100) as u32
 }
 
+/// Porcentaje de un valor de hardware: el mínimo visible (1) cuenta como 0 %, aunque `max` sea pequeño.
+fn backlight_percent(current: u64, max: u64) -> u32 {
+    if current <= 1 {
+        return 0;
+    }
+    ((current * 100 + max / 2) / max) as u32
+}
+
+/// Valor de hardware para `percent`: 0 % es el mínimo visible (1), nunca negro.
+fn backlight_value(max: u64, percent: u32) -> u64 {
+    (max * u64::from(percent.min(100)) / 100).max(1)
+}
+
 fn apply_control(control: Control, percent: u32) {
     let status = match control {
         Control::Volume => {
-            // Moving the slider is a clear wish to hear again.
+            // 0 % es silencio (el filter-chain sigue sonando a 0 %); cualquier otro valor es querer oír.
+            let mute = if percent == 0 { "1" } else { "0" };
+            MUTED_BY_ZERO.store(percent == 0, std::sync::atomic::Ordering::Relaxed);
             let _ = sink_status(
-                &["set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
-                &["set-sink-mute", "@DEFAULT_SINK@", "0"],
+                &["set-mute", "@DEFAULT_AUDIO_SINK@", mute],
+                &["set-sink-mute", "@DEFAULT_SINK@", mute],
             );
             let value = format!("{percent}%");
             sink_status(
@@ -244,8 +282,7 @@ fn apply_control(control: Control, percent: u32) {
             let Some(path) = screen_backlight() else { return };
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
             let max: u64 = read(&path, "max_brightness").and_then(|v| v.parse().ok()).unwrap_or(0);
-            // Never fully dark: the screen would be unreadable.
-            let value = (max * u64::from(percent.max(1)) / 100).max(1);
+            let value = backlight_value(max, percent);
             Command::new("busctl")
                 .args([
                     "--system",
@@ -305,6 +342,22 @@ fn read(dir: &Path, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backlight_percent_floor() {
+        assert_eq!(backlight_percent(1, 65535), 0);
+        assert_eq!(backlight_percent(1, 100), 0);
+        assert_eq!(backlight_percent(2, 100), 2);
+        assert_eq!(backlight_percent(65535, 65535), 100);
+    }
+
+    #[test]
+    fn backlight_value_floor() {
+        assert_eq!(backlight_value(65535, 0), 1);
+        assert_eq!(backlight_value(65535, 100), 65535);
+        assert_eq!(backlight_value(65535, 1), 655);
+        assert_eq!(backlight_value(0, 50), 1);
+    }
 
     #[test]
     fn repeat_helpers() {
