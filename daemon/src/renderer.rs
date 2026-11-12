@@ -41,6 +41,9 @@ enum Glyph {
     Tone(&'static str, DialogTone),
     Icon(Icon),
     Lucide(&'static str),
+    /// Hardware key (F row, special layer, esc) with its own hue; drawn as
+    /// plain text unless a color key style is set.
+    Hw { label: &'static str, icon: Option<&'static str>, hue: u32 },
     /// PNG of an application, drawn in color.
     App(&'static str),
     Widget(WidgetKind),
@@ -63,6 +66,7 @@ pub enum WidgetKind {
     NextEvent,
     Pomodoro,
     NowPlaying,
+    Hilda,
 }
 
 /// What the layout needs to know about the world to pick its keys.
@@ -102,7 +106,7 @@ const KEY_GAP_F: f32 = KEY_GAP as f32;
 const LEVEL_ICON_SLOT: f32 = 60.0;
 const LEVEL_SPACING: f32 = 22.0;
 const LEVEL_METER: f32 = 320.0;
-const GROUP_GAP: u16 = 56;
+pub const GROUP_GAP: u16 = 56;
 const ART: usize = 52;
 const PANEL_GAP: f32 = 24.0;
 
@@ -115,27 +119,59 @@ pub fn panel_slice(zone: (u16, u16), count: usize, index: usize) -> (f32, f32) {
     (start, start + width)
 }
 
-/// The bar of a slider: after the icon, before the percentage.
-pub fn panel_bar(slice_left: f32, slice_right: f32) -> (f32, f32) {
-    (slice_left + 52.0, (slice_right - 92.0).max(slice_left + 60.0))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelPart {
+    Icon,
+    Minus,
+    Value,
+    Plus,
 }
 
-/// Which slider `x` falls on and the level (0..=100) it sets.
-pub fn panel_hit(zone: (u16, u16), count: usize, x: f64) -> Option<(usize, u32)> {
+/// Zonas de un control: ícono, botón −, centro del valor, botón +.
+pub struct PanelGeom {
+    pub icon: (f32, f32),
+    pub minus: (f32, f32),
+    pub value_cx: f32,
+    pub plus: (f32, f32),
+}
+
+pub fn panel_geom(left: f32, right: f32) -> PanelGeom {
+    let icon = (left, left + 44.0);
+    let (inner_l, inner_r) = (left + 48.0, right - 4.0);
+    let mid = (inner_l + inner_r) / 2.0;
+    let half_value = 34.0_f32.min((inner_r - inner_l) / 6.0);
+    PanelGeom {
+        icon,
+        minus: (inner_l, mid - half_value),
+        value_cx: mid,
+        plus: (mid + half_value, inner_r),
+    }
+}
+
+/// Qué control y qué parte cae bajo `x`.
+pub fn panel_hit(zone: (u16, u16), count: usize, x: f64) -> Option<(usize, PanelPart)> {
     (0..count).find_map(|index| {
         let (left, right) = panel_slice(zone, count, index);
         let reach = PANEL_GAP / 2.0;
         if x < f64::from(left - reach) || x >= f64::from(right + reach) {
             return None;
         }
-        Some((index, panel_level(zone, count, index, x)))
+        let geom = panel_geom(left, right);
+        let part = if x < f64::from(left) {
+            PanelPart::Minus
+        } else if x >= f64::from(right) {
+            PanelPart::Plus
+        } else if x < f64::from(geom.icon.1) {
+            PanelPart::Icon
+        } else if x < f64::from(geom.minus.1) {
+            PanelPart::Minus
+        } else if x >= f64::from(geom.plus.0) {
+            PanelPart::Plus
+        } else {
+            PanelPart::Value
+        };
+        Some((index, part))
     })
-}
-
-pub fn panel_level(zone: (u16, u16), count: usize, index: usize, x: f64) -> u32 {
-    let (left, right) = panel_slice(zone, count, index);
-    let (bar_left, bar_right) = panel_bar(left, right);
-    (((x as f32 - bar_left) / (bar_right - bar_left)).clamp(0.0, 1.0) * 100.0).round() as u32
 }
 const NP_FONT_SIZE: f32 = 20.0;
 const NP_LINE_Y: f32 = 20.0;
@@ -190,6 +226,7 @@ fn widget_cols(kind: WidgetKind) -> u16 {
         | WidgetKind::Fan => 2,
         WidgetKind::Network | WidgetKind::NextEvent => 4,
         WidgetKind::NowPlaying => 8,
+        WidgetKind::Hilda => 4,
     }
 }
 
@@ -370,6 +407,7 @@ fn item_cells(items: &[ItemKind], slots: &[Slot], base: usize, ctx: &LayoutCtx) 
             ItemKind::Network => widget(WidgetKind::Network),
             ItemKind::NextEvent => widget(WidgetKind::NextEvent),
             ItemKind::Pomodoro => widget(WidgetKind::Pomodoro),
+            ItemKind::Hilda => widget(WidgetKind::Hilda),
         };
         groups.push((index, cells));
     }
@@ -385,7 +423,7 @@ fn item_cols(groups: &mut [(usize, Vec<Cell>)], slots: &[Slot]) {
             continue;
         };
         // The now playing widget always keeps room for its cover and a line.
-        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying))) {
+        let floor = if matches!(cells.first().map(|cell| &cell.glyph), Some(Glyph::Widget(WidgetKind::NowPlaying | WidgetKind::Hilda))) {
             2
         } else {
             cells.len() as u16
@@ -441,6 +479,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Width in pixels of Hilda's item, if the layout has one: it picks its frames by that size.
+    pub fn hilda_width(&self) -> Option<u16> {
+        self.buttons
+            .iter()
+            .find(|button| matches!(button.glyph, Glyph::Widget(WidgetKind::Hilda)))
+            .map(|button| button.right.saturating_sub(button.left))
+    }
+
     pub fn new(mode: Mode, width: u16, physical_escape: bool) -> Self {
         Self::with_custom(mode, width, physical_escape, &[])
     }
@@ -479,7 +525,8 @@ impl Layout {
                     LABELS
                         .into_iter()
                         .zip(keys)
-                        .map(|(label, key)| (Glyph::Text(label), key))
+                        .enumerate()
+                        .map(|(i, (label, key))| (Glyph::Hw { label, icon: None, hue: F_HUES[i] }, key))
                         .collect(),
                 );
             }
@@ -505,16 +552,16 @@ impl Layout {
                 ],
             ]),
             Mode::Special => groups.extend([
-                vec![(Glyph::Text("print"), Key::Sysrq)],
+                vec![(hw("print", Some("printer"), 0xb88cff), Key::Sysrq)],
                 vec![
-                    (Glyph::Text("insert"), Key::Insert),
-                    (Glyph::Text("delete"), Key::Delete),
+                    (hw("insert", Some("text-cursor-input"), 0x4cd964), Key::Insert),
+                    (hw("delete", Some("delete"), 0xff6b81), Key::Delete),
                 ],
                 vec![
-                    (Glyph::Text("home"), Key::Home),
-                    (Glyph::Text("end"), Key::End),
-                    (Glyph::Text("page up"), Key::PageUp),
-                    (Glyph::Text("page down"), Key::PageDown),
+                    (hw("home", Some("arrow-left-to-line"), 0x4da3ff), Key::Home),
+                    (hw("end", Some("arrow-right-to-line"), 0x4da3ff), Key::End),
+                    (hw("page up", Some("chevrons-up"), 0xff9f45), Key::PageUp),
+                    (hw("page down", Some("chevrons-down"), 0xff9f45), Key::PageDown),
                 ],
             ]),
         }
@@ -528,7 +575,7 @@ impl Layout {
             buttons.push(Button {
                 left: start,
                 right,
-                glyph: Glyph::Text("esc"),
+                glyph: hw("esc", None, 0xffc83d),
                 action: Action::Key(Key::Esc),
                 on: false,
             });
@@ -623,7 +670,7 @@ impl Layout {
         physical_escape: bool,
         ctx: &LayoutCtx,
     ) -> Self {
-        Self::from_placed(app, &[], strip, &[], width, physical_escape, ctx)
+        Self::from_placed(app, &[], strip, &[], None, width, physical_escape, ctx)
     }
 
     /// Like `from_items`, with each item's grid slot (column and width).
@@ -632,6 +679,7 @@ impl Layout {
         app_slots: &[Slot],
         strip: &[ItemKind],
         strip_slots: &[Slot],
+        strip_col: Option<u16>,
         width: u16,
         physical_escape: bool,
         ctx: &LayoutCtx,
@@ -643,7 +691,7 @@ impl Layout {
             buttons.push(Button {
                 left: start,
                 right,
-                glyph: Glyph::Text("esc"),
+                glyph: hw("esc", None, 0xffc83d),
                 action: Action::Key(Key::Esc),
                 on: false,
             });
@@ -665,7 +713,7 @@ impl Layout {
         let mut strip_groups = item_cells(strip, strip_slots, app.len(), ctx);
         item_cols(&mut strip_groups, strip_slots);
         let strip_cols: u16 = strip_groups.iter().flat_map(|(_, cells)| cells).map(|cell| cell.cols).sum();
-        let strip_first = GRID_COLS.saturating_sub(strip_cols).max(zone_end);
+        let strip_first = strip_col.unwrap_or_else(|| GRID_COLS.saturating_sub(strip_cols)).max(zone_end);
         let strip_starts = item_starts(&strip_groups, strip_slots, strip_first);
         let strip_end = strip_groups
             .iter()
@@ -681,7 +729,10 @@ impl Layout {
         let span = |from: u16, cols: u16| {
             (x(from).round() as u16, (x(from + cols) - f32::from(KEY_GAP)).round() as u16)
         };
-        let strip_left = strip_starts.first().map(|at| span(*at, 1).0);
+        let strip_left = match strip_col {
+            Some(_) => Some(span(strip_first, 1).0),
+            None => strip_starts.first().map(|at| span(*at, 1).0),
+        };
         let zone_limit = strip_left.map_or(edge, |left| left.saturating_sub(GROUP_GAP));
         for (groups, starts) in [(zone_groups, zone_starts), (strip_groups, strip_starts)] {
             for ((_, cells), at) in groups.into_iter().zip(starts) {
@@ -742,17 +793,25 @@ const PROMPT_RIGHT: f32 = 96.0;
 const PROMPT_ICON_SLOT: f32 = 44.0;
 const PROMPT_ICON_GAP: f32 = 14.0;
 const KEY_FONT_SIZE: f32 = 23.0;
+/// Hue of each F key: the strip's seven icon tones, cycled.
+const F_HUES: [u32; 12] = [
+    0xff6b81, 0xff9f45, 0xffc83d, 0x4cd964, 0x7fd4ff, 0x4da3ff, 0xb88cff, 0xff6b81, 0xff9f45, 0xffc83d, 0x4cd964, 0x7fd4ff,
+];
+
+fn hw(label: &'static str, icon: Option<&'static str>, hue: u32) -> Glyph {
+    Glyph::Hw { label, icon, hue }
+}
 
 mod prompt;
 pub use prompt::{STATES as TOUCH_ID_STATES, TouchIdLook};
 mod notice;
-pub use notice::{NoticeCard, NoticeIcon, NoticeMotion};
+pub use notice::{NoticeCard, NoticeIcon, NoticeMotion, SCROLL_END_MS, SCROLL_PAUSE_MS};
 
 /// Icons are drawn on a 24 px design grid and centered by their bounds so
 /// every key gets the same optical margin.
 const ICON_SCALE: f32 = 1.3;
 const ICON_STROKE: f32 = 2.3;
-const KEY_INSET: f32 = 6.5;
+const KEY_INSET: f32 = 1.0;
 const KEY_RADIUS: f32 = 8.0;
 const KEY_OUTLINE: f32 = 1.5;
 
@@ -768,6 +827,8 @@ pub struct Canvas {
     color: Rgb,
     /// Draw icons with their own colors.
     pub full_color: bool,
+    /// Style of the F, special and esc keys: A outline, B tinted, C solid, D neon.
+    pub key_style: char,
     app_icons: std::collections::HashMap<&'static str, Option<std::rc::Rc<[u8]>>>,
     notice_fits: std::collections::HashMap<(String, String), notice::NoticeFit>,
     /// A key held for a long press: its index and how full its bar is (0..1).
@@ -831,6 +892,7 @@ impl Canvas {
             base: Rgb::from_u32(key_color),
             color: Rgb::from_u32(key_color),
             full_color: false,
+            key_style: 'A',
             app_icons: std::collections::HashMap::new(),
             notice_fits: std::collections::HashMap::new(),
             hold_progress: None,
@@ -896,6 +958,12 @@ impl Canvas {
 
     /// Icon and ASCII value centered in the button's span, no outline.
     fn widget(&mut self, button: &Button, kind: WidgetKind, data: &WidgetData) {
+        if kind == WidgetKind::Hilda {
+            if let Some(sprite) = &data.hilda {
+                self.hilda(button, sprite);
+            }
+            return;
+        }
         if kind == WidgetKind::NowPlaying {
             if let Some(view) = &data.now_playing {
                 self.now_playing(button, view);
@@ -930,32 +998,40 @@ impl Canvas {
         let cy = f32::from(self.height) / 2.0;
         for (index, row) in panel.rows.iter().enumerate() {
             let (slice_left, slice_right) = panel_slice(panel.zone, panel.rows.len(), index);
-            let (bar_left, bar_right) = panel_bar(slice_left, slice_right);
-            let dim = if panel.active.is_some_and(|active| active != index) { 55 } else { 100 };
+            let geom = panel_geom(slice_left, slice_right);
+            let dim = if panel.pressed.is_some_and(|(pressed, _)| pressed != index) { 55 } else { 100 };
             let color = self.color.scale(dim);
             if let Some(shapes) = lucide::shapes(row.icon) {
                 let saved = self.color;
                 self.color = if self.full_color { full_tint(row.icon, color, self.base) } else { color };
-                self.shapes_sized(slice_left + 20.0, cy, shapes, BLACK, 0.85);
+                self.shapes_sized(geom.icon.0 + 20.0, cy, shapes, BLACK, 0.85);
                 self.color = saved;
             }
-            self.fill(&rounded_rect(bar_left, cy - 4.0, bar_right, cy + 4.0, 4.0), color.scale(25));
-            let percent = row.percent.unwrap_or(0).min(100);
-            let filled = (bar_right - bar_left) * percent as f32 / 100.0;
-            if filled >= 1.0 {
-                self.fill(&rounded_rect(bar_left, cy - 4.0, bar_left + filled, cy + 4.0, 4.0), color);
-            }
-            let mut knob = PathBuilder::new();
-            knob.push_circle(bar_left + filled, cy, 9.0);
-            if let Some(path) = knob.finish() {
-                self.fill(&path, color);
+            let height = f32::from(self.height);
+            for (part, (l, r), glyph) in [(PanelPart::Minus, geom.minus, "minus"), (PanelPart::Plus, geom.plus, "plus")] {
+                let down = panel.pressed == Some((index, part));
+                self.fill(&rounded_rect(l, 6.0, r, height - 6.0, KEY_RADIUS), color.scale(if down { 40 } else { 16 }));
+                if let Some(shapes) = lucide::shapes(glyph) {
+                    let saved = self.color;
+                    self.color = color;
+                    self.shapes_sized((l + r) / 2.0, cy, shapes, BLACK, 0.85);
+                    self.color = saved;
+                }
             }
             let text = row.percent.map_or_else(|| "--".to_owned(), |p| format!("{p}%"));
-            self.center_text(bar_right + 48.0, cy, &text, 20.0, color);
+            self.center_text(geom.value_cx, cy, &text, 20.0, color);
         }
     }
 
     /// Centered `App: text` message, for notifications and timer alerts.
+
+    /// Hilda's eyes centered in their span.
+    fn hilda(&mut self, button: &Button, sprite: &crate::hilda::Sprite) {
+        let span = i32::from(button.right.saturating_sub(button.left));
+        let left = i32::from(button.left) + (span - sprite.width as i32).max(0) / 2;
+        let top = ((i32::from(self.height) - sprite.height as i32) / 2).max(0);
+        self.blit_rgba(left, top, sprite.width, &sprite.rgba);
+    }
 
     /// Cover, `Artist - Title`, progress bar and the optional visualizer.
     fn now_playing(&mut self, button: &Button, view: &NowPlayingView) {
@@ -1003,13 +1079,18 @@ impl Canvas {
             .or_insert_with(|| crate::apps::load_rgba(std::path::Path::new(path), SIZE).map(Into::into))
             .clone();
         let Some(pixels) = pixels else { return };
+        let (left, top) = ((cx - SIZE as f32 / 2.0) as i32, (cy - SIZE as f32 / 2.0) as i32);
+        self.blit_rgba(left, top, SIZE, &pixels);
+    }
+
+    /// Straight RGBA pixels of the given width over the canvas, dimmed with the key level.
+    fn blit_rgba(&mut self, left: i32, top: i32, size: u32, pixels: &[u8]) {
         let level = u32::from(self.color.0.max(self.color.1).max(self.color.2)) * 100
             / u32::from(self.base.0.max(self.base.1).max(self.base.2)).max(1);
-        let (left, top) = ((cx - SIZE as f32 / 2.0) as i32, (cy - SIZE as f32 / 2.0) as i32);
         let width = self.width as i32;
         let target = self.pixmap.pixels_mut();
         for (index, rgba) in pixels.chunks_exact(4).enumerate() {
-            let (x, y) = (left + (index as u32 % SIZE) as i32, top + (index as u32 / SIZE) as i32);
+            let (x, y) = (left + (index as u32 % size) as i32, top + (index as u32 / size) as i32);
             if x < 0 || y < 0 || x >= width || y >= i32::from(self.height) || rgba[3] == 0 {
                 continue;
             }
@@ -1256,6 +1337,12 @@ impl Canvas {
         let cy = f32::from(self.height) / 2.0;
         let (left, right) = (f32::from(button.left), f32::from(button.right));
         let active = active || button.on;
+        if let Glyph::Hw { label, icon, hue } = button.glyph
+            && self.key_style != 'A'
+        {
+            self.hw_key(left, right, label, icon, hue, active);
+            return;
+        }
         // Dialog keys: accent and destructive ones get their own color in full
         // color; in monochrome they share the key color and only the title dims.
         let tone = match button.glyph {
@@ -1299,7 +1386,7 @@ impl Canvas {
         }
         let cx = (left + right) / 2.0;
         match button.glyph {
-            Glyph::Text(text) => {
+            Glyph::Text(text) | Glyph::Hw { label: text, .. } => {
                 let text = self.fit_ascii(text, KEY_FONT_SIZE, right - left - 12.0, FONT_WEIGHT);
                 self.center_text(cx, cy, &text, KEY_FONT_SIZE, self.color);
             }
@@ -1323,6 +1410,56 @@ impl Canvas {
         }
     }
 
+
+    /// Hardware key in one of the color styles (B tinted, C solid, D neon).
+    fn hw_key(&mut self, left: f32, right: f32, label: &str, icon: Option<&str>, hue: u32, active: bool) {
+        let top = KEY_INSET;
+        let bottom = f32::from(self.height) - KEY_INSET;
+        let cy = f32::from(self.height) / 2.0;
+        let hue = at_level(Rgb::from_u32(hue), self.color, self.base);
+        let shape = |inset: f32| rounded_rect(left + inset, top + inset, right - inset, bottom - inset, KEY_RADIUS - inset);
+        let content = match self.key_style {
+            'B' => {
+                self.fill(&shape(0.0), hue.scale(if active { 40 } else { 22 }));
+                self.stroke(&shape(KEY_OUTLINE / 2.0), hue.scale(75), KEY_OUTLINE);
+                hue
+            }
+            'C' => {
+                self.fill(&shape(0.0), if active { hue } else { hue.scale(85) });
+                at_level(Rgb(0x10, 0x10, 0x14), self.color, self.base)
+            }
+            _ => {
+                if active {
+                    self.fill(&shape(0.0), hue.scale(20));
+                }
+                self.stroke(&shape(3.0), hue.scale(30), 6.0);
+                self.stroke(&shape(1.25), hue, 2.5);
+                hue
+            }
+        };
+        let cx = (left + right) / 2.0;
+        let shapes = icon.and_then(lucide::shapes);
+        let Some(shapes) = shapes else {
+            self.center_text(cx, cy, label, KEY_FONT_SIZE, content);
+            return;
+        };
+        // Icon and label centered as a group; icon alone if they do not fit.
+        const ICON_SIZE: f32 = 0.85;
+        const ICON_WIDTH: f32 = 24.0 * ICON_SCALE * ICON_SIZE;
+        const GAP: f32 = 8.0;
+        let size = KEY_FONT_SIZE * 0.8;
+        let text_width = self.text_width_at(label, size, FONT_WEIGHT);
+        let saved = self.color;
+        self.color = content;
+        if ICON_WIDTH + GAP + text_width > right - left - 12.0 {
+            self.shapes_sized(cx, cy, shapes, BLACK, ICON_SIZE);
+        } else {
+            let start = cx - (ICON_WIDTH + GAP + text_width) / 2.0;
+            self.shapes_sized(start + ICON_WIDTH / 2.0, cy, shapes, BLACK, ICON_SIZE);
+            self.center_text(start + ICON_WIDTH + GAP + text_width / 2.0, cy, label, size, content);
+        }
+        self.color = saved;
+    }
 
     /// Converts the premultiplied, always opaque RGBA pixmap into XRGB8888.
     fn flush(&mut self) {
@@ -1754,16 +1891,17 @@ mod tests {
     }
 
     #[test]
-    fn panel_hit_maps_x_to_slider_and_level() {
-        let zone = (10, 1000);
-        let (left, right) = panel_slice(zone, 3, 1);
-        let (bar_left, bar_right) = panel_bar(left, right);
-        assert_eq!(panel_hit(zone, 3, f64::from(bar_left)), Some((1, 0)));
-        assert_eq!(panel_hit(zone, 3, f64::from(bar_right)), Some((1, 100)));
-        let mid = f64::from((bar_left + bar_right) / 2.0);
-        assert_eq!(panel_hit(zone, 3, mid), Some((1, 50)));
-        assert_eq!(panel_hit(zone, 3, -5.0), None);
-        // Slices never overlap.
+    fn panel_hit_maps_x_to_part() {
+        let zone = (100, 1000);
+        let (l0, r0) = panel_slice(zone, 3, 0);
+        let g0 = panel_geom(l0, r0);
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.icon.0 + 5.0)), Some((0, PanelPart::Icon)));
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.minus.0 + 1.0)), Some((0, PanelPart::Minus)));
+        assert_eq!(panel_hit(zone, 3, f64::from(g0.value_cx)), Some((0, PanelPart::Value)));
+        let (l2, r2) = panel_slice(zone, 3, 2);
+        let g2 = panel_geom(l2, r2);
+        assert_eq!(panel_hit(zone, 3, f64::from(g2.plus.1 - 1.0)), Some((2, PanelPart::Plus)));
+        assert_eq!(panel_hit(zone, 3, 2000.0), None);
         assert!(panel_slice(zone, 3, 0).1 < panel_slice(zone, 3, 1).0);
     }
 
@@ -1793,7 +1931,7 @@ mod tests {
             // Overlaps the previous item, so it is pushed after it.
             Slot { col: Some(5), span: None },
         ];
-        let layout = Layout::from_placed(&items, &slots, &[], &[], 2008, true, &LayoutCtx::default());
+        let layout = Layout::from_placed(&items, &slots, &[], &[], None, 2008, true, &LayoutCtx::default());
         let pitch = f32::from(2008 - 2 * KEY_GAP + KEY_GAP) / 24.0;
         let at = |index: usize| f32::from(layout.buttons[index].left);
         let width = |index: usize| f32::from(layout.buttons[index].right - layout.buttons[index].left);
@@ -1802,6 +1940,34 @@ mod tests {
         assert!((width(1) - (4.0 * pitch - f32::from(KEY_GAP))).abs() <= 2.0);
         assert!((at(2) - at(1) - 4.0 * pitch).abs() <= 2.0);
         assert!(layout.buttons.windows(2).all(|pair| pair[0].right < pair[1].left));
+    }
+
+    #[test]
+    fn strip_col_fixes_strip_start() {
+        let strip = [ItemKind::Screenshot];
+        let layout = Layout::from_placed(&[], &[], &strip, &[], Some(12), 2008, true, &LayoutCtx::default());
+        let pitch = f32::from(2008 - 2 * KEY_GAP + KEY_GAP) / 24.0;
+        let left = f32::from(layout.buttons[0].left);
+        assert!((left - (f32::from(KEY_GAP) + 12.0 * pitch)).abs() <= 2.0, "{left}");
+        assert!(layout.zone.1 < layout.buttons[0].left);
+    }
+
+    #[test]
+    fn solid_style_colors_special_keys() {
+        let mut canvas = Canvas::new(2008, 60, 0x00dce6ff).unwrap();
+        canvas.key_style = 'C';
+        let layout = Layout::new(Mode::Special, 2008, false);
+        canvas.keys_with(&layout, None, None);
+        let print = layout
+            .buttons
+            .iter()
+            .find(|button| matches!(button.action, Action::Key(Key::Sysrq)))
+            .unwrap();
+        // Near the left edge, clear of the icon and label.
+        let x = usize::from(print.left) + 4;
+        let pixel = canvas.pixels[30 * usize::from(canvas.width) + x];
+        let (r, g, b) = ((pixel >> 16) & 255, (pixel >> 8) & 255, pixel & 255);
+        assert!(r != g || g != b, "{r} {g} {b}");
     }
 
     #[test]

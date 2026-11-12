@@ -9,6 +9,13 @@ use tiny_skia::PathBuilder;
 use crate::renderer::Shape;
 
 pub static ICONS: &[(&str, &str)] = &[
+    ("printer", include_str!("../icons/lucide/printer.svg")),
+    ("text-cursor-input", include_str!("../icons/lucide/text-cursor-input.svg")),
+    ("delete", include_str!("../icons/lucide/delete.svg")),
+    ("arrow-left-to-line", include_str!("../icons/lucide/arrow-left-to-line.svg")),
+    ("arrow-right-to-line", include_str!("../icons/lucide/arrow-right-to-line.svg")),
+    ("chevrons-up", include_str!("../icons/lucide/chevrons-up.svg")),
+    ("chevrons-down", include_str!("../icons/lucide/chevrons-down.svg")),
     ("app-window", include_str!("../icons/lucide/app-window.svg")),
     ("layout-grid", include_str!("../icons/lucide/layout-grid.svg")),
     ("arrow-down-up", include_str!("../icons/lucide/arrow-down-up.svg")),
@@ -55,6 +62,7 @@ pub static ICONS: &[(&str, &str)] = &[
     ("pause", include_str!("../icons/lucide/pause.svg")),
     ("play", include_str!("../icons/lucide/play.svg")),
     ("plus", include_str!("../icons/lucide/plus.svg")),
+    ("minus", include_str!("../icons/lucide/minus.svg")),
     ("rotate-cw", include_str!("../icons/lucide/rotate-cw.svg")),
     ("search", include_str!("../icons/lucide/search.svg")),
     ("smile", include_str!("../icons/lucide/smile.svg")),
@@ -280,7 +288,7 @@ mod tests {
         for n in [
             "bell", "repeat", "repeat-1", "shuffle", "sliders-horizontal", "volume-2", "keyboard", "sun", "camera", "cloud-sun",
             "smile", "fingerprint", "lock", "lock-open", "check", "app-window", "bell-off", "sun-moon", "coffee", "wifi", "wifi-off",
-            "bluetooth", "bluetooth-off", "layout-grid", "volume-x",
+            "bluetooth", "bluetooth-off", "layout-grid", "volume-x", "minus", "plus",
         ] {
             assert!(exists(n), "{n}");
         }

@@ -20,6 +20,7 @@ mod atspi;
 mod mpris;
 mod notify;
 mod policy;
+mod hilda;
 mod pomodoro;
 mod renderer;
 mod screensaver;
@@ -87,6 +88,10 @@ const ACTIVITY_FRAME_MS: u64 = 33;
 /// value is read back repeatedly for a short while after each step.
 const LEVEL_POLL_MS: u64 = 50;
 const LEVEL_POLL_WINDOW_MS: u64 = 600;
+/// Deja terminar al hilo `level-writer` antes de releer volumen y teclado.
+const PANEL_REREAD_MS: u64 = 300;
+/// Bajo este nivel el panel escribe el brillo directo: las teclas de GNOME no bajan de su mínimo.
+const BRIGHTNESS_DIRECT_BELOW: u32 = 10;
 /// The level feedback crossfades to the other side of the fingers once
 /// they pass the middle of the bar by this much.
 const LEVEL_SIDE_HYSTERESIS_PX: f64 = 60.0;
@@ -106,10 +111,9 @@ const TERMINALS: [&str; 2] = ["org.gnome.Ptyxis.desktop", "com.mitchellh.ghostty
 /// With the screen dark, a touch lights the bar for this long without touches.
 const SCREEN_OFF_AWAKE_MS: u64 = 120_000;
 /// Notification card: slide in, hold, slide out; a newer one swaps in.
-const NOTICE_ENTER_MS: u64 = 380;
-const NOTICE_HOLD_MS: u64 = 4_500;
-const NOTICE_EXIT_MS: u64 = 260;
-const NOTICE_SWAP_MS: u64 = 240;
+const NOTICE_ENTER_MS: u64 = 240;
+const NOTICE_EXIT_MS: u64 = 180;
+const NOTICE_SWAP_MS: u64 = 160;
 /// While the card holds, the bar under it needs a frame this often.
 const NOTICE_HOLD_FRAME_MS: u64 = 100;
 /// A notice kept for later is dropped after this long, and rechecked this often.
@@ -174,9 +178,11 @@ enum Contact {
     Scrub(usize),
     /// A finger on slider `n` of the open controls panel.
     Panel(usize),
-    /// Volume or brightness key held: a tap on release, a slider once held
-    /// for `hold_slider_ms`.
-    SliderHold(usize),
+    /// Dedo sobre la tarjeta: toque abre la app, deslizar la descarta.
+    NoticeTouch { start_x: f64, x: f64 },
+    /// Volumen o brillo mantenido: toque al soltar; tras `hold_slider_ms`
+    /// repite ±1 %.
+    LevelHold(usize),
     /// Pomodoro key: a tap pauses or starts, a long hold resets. Holds the
     /// touch time.
     PomoHold(usize, u64),
@@ -215,6 +221,8 @@ struct TrackToast {
     /// The card of a notification, and the one it replaced with when.
     card: Option<renderer::NoticeCard>,
     replaced: Option<(renderer::NoticeCard, u64)>,
+    /// Ms que la tarjeta queda quieta antes de salir.
+    hold_ms: u64,
 }
 
 struct BacklightFade {
@@ -238,15 +246,33 @@ struct Panel {
     levels: [Option<u32>; 3],
     /// The sound is muted: the volume icon shows it and taps flip it.
     muted: bool,
-    active: Option<usize>,
+    repeat: Option<PanelRepeat>,
     until_ms: u64,
-    last_set_ms: u64,
+    /// Relectura del brillo real tras pulsar las teclas del sistema.
+    read_ms: Option<u64>,
+    read_until_ms: u64,
+    /// Relectura de volumen y teclado tras soltar −/+.
+    reread_ms: Option<u64>,
 }
 
-struct SliderHold {
+/// Botón −/+ del panel mantenido: repite ±1 % acelerando.
+struct PanelRepeat {
+    slider: usize,
+    part: renderer::PanelPart,
+    delta: i32,
+    start_ms: u64,
+    next_ms: u64,
+    stop_felt: bool,
+}
+
+struct LevelHold {
     slot: u32,
-    kind: LevelKind,
+    control: layout::Control,
+    delta: i32,
     due_ms: u64,
+    start_ms: Option<u64>,
+    level: Option<u32>,
+    stop_felt: bool,
 }
 
 /// Held keys that open a slider instead of repeating.
@@ -333,6 +359,14 @@ fn dialog_tone(label: &str, last: bool) -> layout::DialogTone {
     }
 }
 
+/// `text` en una línea: caracteres de control como espacios, sin bordes.
+/// Conserva tildes; nunca vacío si había texto.
+fn one_line(text: &str) -> String {
+    let line: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let line = line.trim();
+    if line.is_empty() && !text.trim().is_empty() { "-".to_owned() } else { line.to_owned() }
+}
+
 /// `text` as plain ASCII on one line: accents folded, control characters
 /// turned into spaces, anything else non-ASCII dropped. Text that has only
 /// such characters becomes `-`, never an empty label.
@@ -405,10 +439,13 @@ struct Transient {
     windows: Option<(shell::WindowList, usize)>,
 }
 
-fn slider_kind(action: Action) -> Option<LevelKind> {
+/// Teclas que, mantenidas, repiten ±1 % del nivel.
+fn hold_control(action: Action) -> Option<(layout::Control, i32)> {
     match action {
-        Action::Key(Key::VolumeDown | Key::VolumeUp | Key::Mute) => Some(LevelKind::Volume),
-        Action::Key(Key::BrightnessDown | Key::BrightnessUp) => Some(LevelKind::Brightness),
+        Action::Key(Key::VolumeUp) => Some((layout::Control::Volume, 1)),
+        Action::Key(Key::VolumeDown) => Some((layout::Control::Volume, -1)),
+        Action::Key(Key::BrightnessUp) => Some((layout::Control::Brightness, 1)),
+        Action::Key(Key::BrightnessDown) => Some((layout::Control::Brightness, -1)),
         _ => None,
     }
 }
@@ -476,6 +513,8 @@ struct Runtime {
     level_stop_felt: bool,
     /// OLED care: dim after idle, and move the picture one pixel now and then.
     dim_deadline_ms: Option<u64>,
+    /// Idle period after which the whole bar goes dark (a touch wakes it).
+    off_deadline_ms: Option<u64>,
     dimmed: bool,
     shift_index: usize,
     shift_next_ms: Option<u64>,
@@ -541,7 +580,7 @@ struct Runtime {
     pomodoro: pomodoro::Pomodoro,
     pomo_next_ms: Option<u64>,
     windows_missing_until_ms: Option<u64>,
-    slider_hold: Option<SliderHold>,
+    level_hold: Option<LevelHold>,
     /// Finger held on the caffeine key: slot, key index, touch time and the
     /// next frame of the progress bar and the second last pulsed.
     caffeine_due: Option<(u32, usize, u64, u64, u8)>,
@@ -571,6 +610,7 @@ impl Runtime {
         let (width, height) = display.dimensions();
         let mut canvas = Canvas::new(width, height, canvas_color(&config))?;
         canvas.full_color = config.icon_color == "full";
+        canvas.key_style = config.key_style.chars().next().unwrap_or('A');
         display.present(&canvas.pixels, width, height)?;
         let mut backlight = Backlight::open()?;
         backlight.set(0)?;
@@ -652,6 +692,7 @@ impl Runtime {
             escape_opacity: 0.0,
             escape_fade: None,
             dim_deadline_ms: None,
+            off_deadline_ms: None,
             dimmed: false,
             shift_index: 0,
             shift_next_ms: pixel_shift_first_ms,
@@ -702,7 +743,7 @@ impl Runtime {
             pomodoro: pomodoro::Pomodoro::new(work_min, break_min),
             pomo_next_ms: None,
             windows_missing_until_ms: None,
-            slider_hold: None,
+            level_hold: None,
             caffeine_due: None,
             slider_shown: false,
             player: None,
@@ -758,16 +799,24 @@ impl Runtime {
         } else {
             self.plus.zone_for(&self.focus_app).1.to_vec()
         };
-        self.items = zone.iter().chain(&self.plus.strip).cloned().collect();
+        // With the panel open the strip steps aside so the sliders use the whole bar.
+        let (strip, strip_slots, strip_col): (&[ItemKind], &[Slot], Option<u16>) = if self.panel.is_some() {
+            (&[], &[], None)
+        } else {
+            (&self.plus.strip, &self.plus.strip_slots, self.plus.strip_col)
+        };
+        self.items = zone.iter().chain(strip).cloned().collect();
         let layout = Layout::from_placed(
             &zone,
             &slots,
-            &self.plus.strip,
-            &self.plus.strip_slots,
+            strip,
+            strip_slots,
+            strip_col,
             self.canvas.width,
             self.physical_escape,
             &self.layout_ctx,
         );
+        hilda::set_layout(layout.hilda_width().map(u32::from));
         self.widgets.panel = self.panel.as_ref().map(|panel| {
             let button = layout
                 .buttons
@@ -797,7 +846,7 @@ impl Runtime {
                         percent: panel.levels[control.index()],
                     })
                     .collect(),
-                active: panel.active,
+                pressed: panel.repeat.as_ref().map(|r| (r.slider, r.part)),
             }
         });
         layout
@@ -839,6 +888,12 @@ impl Runtime {
             return;
         }
         self.start_panel_fade(1, now);
+        // Una tarjeta ya visible no se queda sobre los controles: espera a que se cierren.
+        if let Some(card) = self.toast.as_mut().and_then(|toast| toast.card.take()) {
+            self.toast = None;
+            self.pending_card = Some((card, now + PENDING_CARD_MS));
+            self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
+        }
         self.transient = None;
         self.suggest = None;
         let mut levels = [None; 3];
@@ -848,14 +903,16 @@ impl Runtime {
         self.panel = Some(Panel {
             levels,
             muted: levels::volume().muted,
-            active: None,
+            repeat: None,
             until_ms: now + self.plus.controls.timeout_ms,
-            last_set_ms: 0,
+            read_ms: None,
+            read_until_ms: 0,
+            reread_ms: None,
         });
     }
 
-    /// Slider and level under a touch, while the panel is open.
-    fn panel_touch(&self, x: f64, y: f64) -> Option<(usize, u32)> {
+    /// Control y parte bajo un toque, con el panel abierto.
+    fn panel_touch(&self, x: f64, y: f64) -> Option<(usize, renderer::PanelPart)> {
         self.panel.as_ref()?;
         if y < 5.0 || y > f64::from(self.canvas.height.saturating_sub(5)) {
             return None;
@@ -863,44 +920,126 @@ impl Runtime {
         renderer::panel_hit(self.panel_zone, self.plus.controls.items.len(), x)
     }
 
-    /// A touch on the icon of the volume slider, left of its bar.
-    fn panel_icon_hit(&self, slider: usize, x: f64) -> bool {
-        let count = self.plus.controls.items.len();
-        if self.plus.controls.items.get(slider) != Some(&layout::Control::Volume) {
-            return false;
-        }
-        let (left, right) = renderer::panel_slice(self.panel_zone, count, slider);
-        x < f64::from(renderer::panel_bar(left, right).0)
-    }
-
-    fn panel_set(&mut self, slider: usize, level: u32, now: u64, force: bool) -> Result<()> {
-        let Some(control) = self.plus.controls.items.get(slider).copied() else {
-            return Ok(());
-        };
+    /// Un paso de ±1 % del botón mantenido.
+    fn panel_step(&mut self, now: u64) -> Result<()> {
+        let timeout = self.plus.controls.timeout_ms;
         let Some(panel) = self.panel.as_mut() else {
             return Ok(());
         };
-        panel.active = Some(slider);
-        panel.until_ms = now + self.plus.controls.timeout_ms;
-        let changed = panel.levels[control.index()] != Some(level);
-        panel.levels[control.index()] = Some(level);
-        // Moving the volume unmutes, as the worker does.
-        if control == layout::Control::Volume && changed && level > 0 {
-            panel.muted = false;
+        let Some(repeat) = panel.repeat.as_mut() else {
+            return Ok(());
+        };
+        let Some(control) = self.plus.controls.items.get(repeat.slider).copied() else {
+            return Ok(());
+        };
+        panel.until_ms = now + timeout;
+        if control == layout::Control::Brightness {
+            // También al subir: las teclas del sistema saltarían varios puntos desde el mínimo.
+            if let Some(level) = panel.levels[control.index()].filter(|l| *l <= BRIGHTNESS_DIRECT_BELOW) {
+                let new = levels::stepped(level, repeat.delta);
+                if new == level {
+                    if !repeat.stop_felt {
+                        self.haptic.firm();
+                        repeat.stop_felt = true;
+                    }
+                } else {
+                    panel.levels[control.index()] = Some(new);
+                    levels::set_control(control, new);
+                    self.haptic.click();
+                    repeat.stop_felt = false;
+                }
+                return self.refresh_widgets();
+            }
+            // Por las teclas del sistema: el autobrillo lo toma como cambio
+            // manual (escribir directo hace que vuelva solo a su curva).
+            let key = if repeat.delta > 0 { Key::BrightnessUp } else { Key::BrightnessDown };
+            panel.read_ms.get_or_insert(now + LEVEL_POLL_MS);
+            panel.read_until_ms = now + LEVEL_POLL_WINDOW_MS;
+            if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 {
+                self.haptic.click();
+            }
+            self.keyboard.press(key)?;
+            self.keyboard.release()?;
+            return self.refresh_widgets();
         }
-        if changed && (force || now.saturating_sub(panel.last_set_ms) >= 40) {
-            panel.last_set_ms = now;
-            levels::set_control(control, level);
-            self.haptic.click();
+        if let Some(level) = panel.levels[control.index()] {
+            let new = levels::stepped(level, repeat.delta);
+            if new == level {
+                if !repeat.stop_felt {
+                    self.haptic.firm();
+                    repeat.stop_felt = true;
+                }
+            } else {
+                panel.levels[control.index()] = Some(new);
+                if control == layout::Control::Volume {
+                    panel.muted = new == 0;
+                }
+                levels::set_control(control, new);
+                if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 || new % 5 == 0 {
+                    self.haptic.click();
+                }
+                repeat.stop_felt = false;
+            }
         }
         self.refresh_widgets()
     }
 
+    fn panel_repeat_due(&mut self, now: u64) -> Result<()> {
+        let due = self
+            .panel
+            .as_ref()
+            .and_then(|p| p.repeat.as_ref())
+            .is_some_and(|r| r.next_ms <= now);
+        if !due {
+            return Ok(());
+        }
+        self.panel_step(now)?;
+        if let Some(r) = self.panel.as_mut().and_then(|p| p.repeat.as_mut()) {
+            r.next_ms = now + levels::repeat_interval_ms(now.saturating_sub(r.start_ms));
+        }
+        Ok(())
+    }
+
     fn panel_tick(&mut self, now: u64) -> Result<()> {
+        // Con −/+ pulsado de nuevo la relectura quedaría vieja: espera a soltar.
         if self
             .panel
             .as_ref()
-            .is_some_and(|panel| panel.active.is_none() && now >= panel.until_ms)
+            .is_some_and(|p| p.repeat.is_none() && p.reread_ms.is_some_and(|due| now >= due))
+        {
+            if let Some(panel) = self.panel.as_mut() {
+                let items = &self.plus.controls.items;
+                for control in items.iter().filter(|c| **c != layout::Control::Brightness) {
+                    panel.levels[control.index()] = levels::read_control(*control);
+                }
+                if items.contains(&layout::Control::Volume) {
+                    panel.muted = levels::volume().muted;
+                }
+                panel.reread_ms = None;
+            }
+            self.refresh_widgets()?;
+        }
+        if self.panel.as_ref().and_then(|p| p.read_ms).is_some_and(|due| now >= due) {
+            let slots: Vec<usize> = self
+                .plus
+                .controls
+                .items
+                .iter()
+                .filter(|c| **c == layout::Control::Brightness)
+                .map(|c| c.index())
+                .collect();
+            if let Some(panel) = self.panel.as_mut() {
+                for slot in slots {
+                    panel.levels[slot] = levels::read_control(layout::Control::Brightness);
+                }
+                panel.read_ms = (now < panel.read_until_ms).then_some(now + LEVEL_POLL_MS);
+            }
+            self.refresh_widgets()?;
+        }
+        if self
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.repeat.is_none() && now >= panel.until_ms)
         {
             self.panel = None;
             self.start_panel_fade(-1, now);
@@ -929,6 +1068,10 @@ impl Runtime {
                 .keys_with(&self.layout, self.active_button, Some(&self.widgets));
         } else {
             self.canvas.keys(&self.layout, self.active_button);
+        }
+        if self.visible && self.toast.as_ref().is_some_and(|t| t.card.is_some()) {
+            // El strip redibujado queda bajo la tarjeta, sin parpadeo.
+            return self.notice_frame(self.now_ms());
         }
         if self.layer_fade.is_some() {
             return self.present_layer_fade(self.now_ms());
@@ -1072,6 +1215,7 @@ impl Runtime {
         self.touches_armed = true;
         self.deadline_ms = None;
         self.dim_deadline_ms = None;
+        self.off_deadline_ms = None;
         self.dimmed = false;
         if self.visible && learned_off {
             self.learner
@@ -1114,36 +1258,57 @@ impl Runtime {
     fn touch_down(&mut self, slot: u32, x: f64, y: f64) -> Result<()> {
         let now = self.now_ms();
         self.touch_dim(now);
-        if self.toast.as_ref().is_some_and(|toast| toast.notice) {
-            // A touch on a message takes the user to the app that sent it.
-            let app = self
-                .toast
-                .as_ref()
-                .and_then(|toast| toast.card.as_ref())
-                .map(|card| card.app.clone())
-                .filter(|app| !app.is_empty());
-            if let Some(app) = app {
-                std::thread::spawn(move || shell::focus_app(&app));
-            }
-            self.contacts.insert(slot, Contact::Cancelled);
-            return self.toast_done();
+        if self.toast.as_ref().is_some_and(|toast| toast.notice)
+            && (!self.notice_keeps_strip() || x < f64::from(self.notice_zone_right()))
+        {
+            self.contacts.insert(slot, Contact::NoticeTouch { start_x: x, x });
+            return Ok(());
         }
-        if let Some((slider, level)) = self.panel_touch(x, y) {
-            if self.panel_icon_hit(slider, x) {
-                // The icon of the volume slider is the mute button.
-                levels::toggle_mute();
-                self.haptic.click();
-                self.contacts.insert(slot, Contact::Cancelled);
-                self.touches_armed = true;
-                if let Some(panel) = self.panel.as_mut() {
-                    panel.muted = !panel.muted;
-                    panel.until_ms = now + self.plus.controls.timeout_ms;
-                }
-                return self.refresh_widgets();
+        if let Some((slider, part)) = self.panel_touch(x, y) {
+            // Usar el panel cuenta como actividad, sin re-encender el teclado.
+            if self.config.activity_backlight {
+                self.activity_deadline_ms = Some(now + self.config.activity_timeout_ms);
             }
-            self.contacts.insert(slot, Contact::Panel(slider));
-            self.touches_armed = true;
-            return self.panel_set(slider, level, now, true);
+            use renderer::PanelPart;
+            let control = self.plus.controls.items.get(slider).copied();
+            match part {
+                PanelPart::Icon if control == Some(layout::Control::Volume) => {
+                    // El ícono de volumen es el botón de silencio.
+                    levels::toggle_mute();
+                    self.haptic.click();
+                    self.contacts.insert(slot, Contact::Cancelled);
+                    self.touches_armed = true;
+                    if let Some(panel) = self.panel.as_mut() {
+                        panel.muted = !panel.muted;
+                        panel.until_ms = now + self.plus.controls.timeout_ms;
+                    }
+                    return self.refresh_widgets();
+                }
+                PanelPart::Minus | PanelPart::Plus => {
+                    let delta = if part == PanelPart::Minus { -1 } else { 1 };
+                    if let Some(panel) = self.panel.as_mut() {
+                        panel.repeat = Some(PanelRepeat {
+                            slider,
+                            part,
+                            delta,
+                            start_ms: now,
+                            next_ms: now + levels::REPEAT_FIRST_MS,
+                            stop_felt: false,
+                        });
+                    }
+                    self.contacts.insert(slot, Contact::Panel(slider));
+                    self.touches_armed = true;
+                    return self.panel_step(now);
+                }
+                PanelPart::Icon | PanelPart::Value => {
+                    self.contacts.insert(slot, Contact::Cancelled);
+                    self.touches_armed = true;
+                    if let Some(panel) = self.panel.as_mut() {
+                        panel.until_ms = now + self.plus.controls.timeout_ms;
+                    }
+                    return Ok(());
+                }
+            }
         }
         self.user_activity(now, false)?;
         self.resolve_pending(now)?;
@@ -1230,24 +1395,77 @@ impl Runtime {
         Ok(())
     }
 
-    /// The hold on a volume or brightness key became a slider: the finger now
-    /// steps the level and the keys give way to the level overlay.
-    fn slider_due(&mut self, now: u64) -> Result<()> {
-        let Some(hold) = self.slider_hold.take_if(|hold| now >= hold.due_ms) else {
+    /// Volumen o brillo mantenido: repite ±1 % acelerando, con el overlay
+    /// de nivel como indicador.
+    fn level_hold_due(&mut self, now: u64) -> Result<()> {
+        let Some(hold) = self.level_hold.as_ref().filter(|hold| now >= hold.due_ms) else {
             return Ok(());
         };
-        let x = self.positions.get(&hold.slot).copied().unwrap_or_default();
-        let (kind, step) = match hold.kind {
-            LevelKind::Volume => (SwipeKind::Volume, self.config.volume_swipe_step_px),
-            LevelKind::Brightness => (SwipeKind::Brightness, self.config.brightness_swipe_step_px),
+        let (control, delta, slot) = (hold.control, hold.delta, hold.slot);
+        let start = match hold.start_ms {
+            Some(start) => start,
+            None => {
+                let level = levels::read_control(control);
+                if level.is_none() {
+                    self.level_hold = None;
+                    self.contacts.insert(slot, Contact::Cancelled);
+                    return Ok(());
+                }
+                if let Some(hold) = self.level_hold.as_mut() {
+                    hold.start_ms = Some(now);
+                    hold.level = level;
+                }
+                let kind = if control == layout::Control::Volume {
+                    LevelKind::Volume
+                } else {
+                    LevelKind::Brightness
+                };
+                self.active_button = None;
+                self.slider_shown = true;
+                self.begin_level(kind)?;
+                self.level.percent = level;
+                now
+            }
         };
-        self.contacts.insert(hold.slot, Contact::Swipe);
-        self.swipe = Some(Swipe::new(kind, x, f64::from(step)));
-        self.active_button = None;
-        self.slider_shown = true;
-        self.begin_level(hold.kind)?;
-        self.haptic.click();
-        Ok(())
+        let Some(hold) = self.level_hold.as_mut() else {
+            return Ok(());
+        };
+        if control == layout::Control::Brightness {
+            // Teclas del sistema (ver `panel_step`); el nivel llega por la
+            // relectura y detecta los topes.
+            let key = if delta > 0 { Key::BrightnessUp } else { Key::BrightnessDown };
+            self.keyboard.press(key)?;
+            self.keyboard.release()?;
+            self.level_poll_ms.get_or_insert(now + LEVEL_POLL_MS);
+            self.level_poll_until_ms = now + LEVEL_POLL_WINDOW_MS;
+            self.level_stepped = true;
+            if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 {
+                self.haptic.click();
+            }
+        } else if let Some(level) = hold.level {
+            let new = levels::stepped(level, delta);
+            if new == level {
+                if !hold.stop_felt {
+                    hold.stop_felt = true;
+                    self.haptic.firm();
+                }
+            } else {
+                hold.level = Some(new);
+                hold.stop_felt = false;
+                levels::set_control(control, new);
+                self.level.percent = Some(new);
+                if control == layout::Control::Volume {
+                    self.level.muted = new == 0;
+                }
+                self.level_dirty = true;
+                if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 || new % 5 == 0 {
+                    self.haptic.click();
+                }
+            }
+        }
+        hold.due_ms = now + levels::repeat_interval_ms(now.saturating_sub(start));
+        self.overlay_hide_ms = None;
+        self.flush_level()
     }
 
     fn start_swipe(&mut self, pending: PendingTouch, slot: u32) -> Result<()> {
@@ -1340,15 +1558,19 @@ impl Runtime {
                 self.arm_deadline(now);
                 Ok(())
             }
-            Some(index) if slider_kind(self.layout.buttons[index].action).is_some() => {
-                let kind = slider_kind(self.layout.buttons[index].action)
+            Some(index) if hold_control(self.layout.buttons[index].action).is_some() => {
+                let (control, delta) = hold_control(self.layout.buttons[index].action)
                     .expect("checked by the guard");
                 let touched = pending.deadline_ms - self.config.two_finger_window_ms;
-                self.contacts.insert(pending.slot, Contact::SliderHold(index));
-                self.slider_hold = Some(SliderHold {
+                self.contacts.insert(pending.slot, Contact::LevelHold(index));
+                self.level_hold = Some(LevelHold {
                     slot: pending.slot,
-                    kind,
+                    control,
+                    delta,
                     due_ms: touched + self.config.hold_slider_ms,
+                    start_ms: None,
+                    level: None,
+                    stop_felt: false,
                 });
                 Ok(())
             }
@@ -1421,6 +1643,7 @@ impl Runtime {
             notice: false,
             card: None,
             replaced: None,
+            hold_ms: 0,
         });
         self.track_frame(now)
     }
@@ -1491,6 +1714,24 @@ impl Runtime {
         self.hide_overlay()
     }
 
+    /// La tarjeta deja visible y usable el strip derecho (modo Media).
+    fn notice_keeps_strip(&self) -> bool {
+        self.visible && self.state.mode == Mode::Media
+    }
+
+    /// Dónde termina la tarjeta; más allá queda el strip si se conserva.
+    fn notice_zone_right(&self) -> f32 {
+        if self.notice_keeps_strip() {
+            // `zone.1` deja un hueco antes del strip y los botones de la zona
+            // pueden pasarlo: la tarjeta llega hasta el primer botón del strip.
+            let from = self.layout.zone.1.saturating_add(renderer::GROUP_GAP);
+            let strip_left = self.layout.buttons.iter().map(|b| b.left).filter(|&left| left >= from).min();
+            f32::from(strip_left.unwrap_or(self.layout.zone.1))
+        } else {
+            f32::from(self.layout.zone.1.max(self.canvas.width / 2))
+        }
+    }
+
     /// One frame of the notification card: 30 fps while it moves, a slower
     /// pace while it holds and its bar runs down.
     fn notice_frame(&mut self, now: u64) -> Result<()> {
@@ -1498,12 +1739,12 @@ impl Runtime {
             return Ok(());
         };
         let elapsed = now.saturating_sub(toast.start_ms);
-        if elapsed >= NOTICE_ENTER_MS + NOTICE_HOLD_MS + NOTICE_EXIT_MS {
+        if elapsed >= NOTICE_ENTER_MS + toast.hold_ms + NOTICE_EXIT_MS {
             return self.toast_done();
         }
         let enter = (elapsed as f32 / NOTICE_ENTER_MS as f32).min(1.0);
-        let leave = (elapsed.saturating_sub(NOTICE_ENTER_MS + NOTICE_HOLD_MS) as f32 / NOTICE_EXIT_MS as f32).min(1.0);
-        let remain = 1.0 - (elapsed.saturating_sub(NOTICE_ENTER_MS) as f32 / NOTICE_HOLD_MS as f32).min(1.0);
+        let leave = (elapsed.saturating_sub(NOTICE_ENTER_MS + toast.hold_ms) as f32 / NOTICE_EXIT_MS as f32).min(1.0);
+        let remain = 1.0 - (elapsed.saturating_sub(NOTICE_ENTER_MS) as f32 / toast.hold_ms as f32).min(1.0);
         let swap = toast
             .replaced
             .as_ref()
@@ -1516,13 +1757,10 @@ impl Runtime {
         toast.next_ms = Some(now + if moving { TRACK_FRAME_MS } else { NOTICE_HOLD_FRAME_MS });
         let card = toast.card.clone().expect("a card toast has its card");
         let old = toast.replaced.as_ref().map(|(old, _)| old.clone());
-        let motion = renderer::NoticeMotion { enter, leave, remain, swap };
-        let keep_strip = self.visible && self.state.mode == Mode::Media;
-        let zone_right = if keep_strip {
-            f32::from(self.layout.zone.1)
-        } else {
-            f32::from(self.layout.zone.1.max(self.canvas.width / 2))
-        };
+        let scroll_ms = elapsed.saturating_sub(NOTICE_ENTER_MS);
+        let motion = renderer::NoticeMotion { enter, leave, remain, swap, scroll_ms };
+        let keep_strip = self.notice_keeps_strip();
+        let zone_right = self.notice_zone_right();
         self.canvas.notice_card(&card, old.as_ref(), motion, zone_right, keep_strip);
         self.present_overlay()
     }
@@ -1689,6 +1927,14 @@ impl Runtime {
             if self.level_kind != Some(kind) || level == self.level {
                 continue;
             }
+            // La lectura asíncrona no debe pisar el valor que se está subiendo.
+            if self
+                .level_hold
+                .as_ref()
+                .is_some_and(|h| h.start_ms.is_some() && h.control == layout::Control::Volume)
+            {
+                continue;
+            }
             self.level = level;
             self.level_dirty = true;
             // Reaching a stop is only known once the desktop has applied
@@ -1723,7 +1969,14 @@ impl Runtime {
 
     fn keyboard_backlight_changed(&mut self) -> Result<()> {
         if let Ok(brightness) = kbdlight::brightness() {
+            let chosen = self.backlight_fade.is_none()
+                && !self.activity_dimmed
+                && self.activity_current_brightness != Some(brightness);
             self.activity_current_brightness = Some(brightness);
+            if chosen {
+                // Un cambio ajeno al fade (panel, teclas, GNOME) es el nivel a restaurar, incluso 0.
+                self.activity_restore_brightness = Some(brightness);
+            }
             if self.activity_dimmed && self.backlight_fade.is_none() && brightness > 0 {
                 self.activity_restore_brightness = Some(brightness);
                 self.activity_dimmed = false;
@@ -1757,9 +2010,21 @@ impl Runtime {
         }
         self.dim_deadline_ms = (self.visible && self.config.dim_after_ms > 0)
             .then(|| now + self.config.dim_after_ms);
+        self.off_deadline_ms = (self.visible && self.config.off_after_ms > 0)
+            .then(|| now + self.config.off_after_ms);
     }
 
     fn dim_if_due(&mut self, now: u64) {
+        if self.off_deadline_ms.is_some_and(|deadline| now >= deadline) {
+            self.off_deadline_ms = None;
+            if self.visible && self.touch_id == TouchIdState::Idle {
+                eprintln!("kait2en-touchbar-plus: off after idle");
+                if let Err(error) = self.go_dark(false) {
+                    eprintln!("kait2en-touchbar-plus: darken Touch Bar after idle: {error:#}");
+                }
+            }
+            return;
+        }
         if self.dim_deadline_ms.is_some_and(|deadline| now >= deadline) {
             self.dim_deadline_ms = None;
             if self.visible && self.touch_id == TouchIdState::Idle {
@@ -1799,8 +2064,9 @@ impl Runtime {
             .is_some_and(|fade| fade.to == 0);
         if self.activity_dimmed || fading_out {
             let brightness = match self.activity_restore_brightness {
-                Some(brightness) if brightness > 0 => Some(brightness),
-                _ => match self
+                Some(0) => None, // El usuario lo dejó apagado: no se re-enciende.
+                Some(brightness) => Some(brightness),
+                None => match self
                     .activity_max_brightness
                     .map(Ok)
                     .unwrap_or_else(kbdlight::maximum_brightness)
@@ -2263,6 +2529,15 @@ impl Runtime {
         self.refresh_widgets()
     }
 
+    /// Hilda sets the pace: each frame she publishes redraws the bar.
+    fn hilda_frame(&mut self, sprite: hilda::Sprite) -> Result<()> {
+        self.widgets.hilda = Some(sprite);
+        if self.items.contains(&ItemKind::Hilda) {
+            self.refresh_widgets()?;
+        }
+        Ok(())
+    }
+
     fn now_playing_tick(&mut self, now: u64) -> Result<()> {
         if !self.np_next_ms.is_some_and(|due| now >= due) {
             return Ok(());
@@ -2375,6 +2650,7 @@ impl Runtime {
             | ItemKind::Fan
             | ItemKind::Network => CustomKey::run("gnome-system-monitor"),
             ItemKind::Pomodoro => self.pomodoro_tap(now)?,
+            ItemKind::Hilda => hilda::touch(),
             ItemKind::Controls => self.toggle_panel(now),
             ItemKind::Emoji => self.open_emoji(now),
             ItemKind::Windows => {
@@ -2673,7 +2949,9 @@ impl Runtime {
     }
 
     fn focus_changed(&mut self, app: String) -> Result<()> {
-        if app == self.focus_app {
+        // A window with no desktop file (`window:<n>`: a popup or helper that
+        // flashes focus) is not an app switch; keep the current row.
+        if app.starts_with("window:") || app == self.focus_app {
             return Ok(());
         }
         let changed = self.plus.zone_for(&app) != self.plus.zone_for(&self.focus_app);
@@ -2745,29 +3023,32 @@ impl Runtime {
     /// A plain message (timer, copy failure): `text` as the title, the sender below.
     fn show_notice(&mut self, app: &str, text: &str, now: u64) -> Result<()> {
         let card = renderer::NoticeCard {
-            title: fold_ascii(text),
-            body: fold_ascii(app),
+            title: one_line(text),
+            body: one_line(app),
             icon: renderer::NoticeIcon::Lucide("bell"),
             app: String::new(),
         };
         self.show_card(card, now, false)
     }
 
-    /// Shows `card`, or keeps the latest one for later while Touch ID or a
-    /// slider has the bar. `quiet` skips the haptic tap (an update).
+    /// Shows `card`, or keeps the latest one for later while Touch ID, a slider or the controls panel has the bar. `quiet` skips the haptic tap (an update).
     fn show_card(&mut self, card: renderer::NoticeCard, now: u64, quiet: bool) -> Result<()> {
         if self.screen_off() {
             return Ok(());
         }
-        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() {
+        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() || self.panel.is_some() {
             self.pending_card = Some((card, now + PENDING_CARD_MS));
             self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
             return Ok(());
         }
-        let total = NOTICE_ENTER_MS + NOTICE_HOLD_MS;
+        let over = self.canvas.notice_overflow(&card, self.notice_zone_right());
+        let hold_ms = self.config.notice_hold_ms.max(
+            renderer::SCROLL_PAUSE_MS + (over * 1000.0 / 50.0) as u64 + renderer::SCROLL_END_MS,
+        );
         if let Some(toast) = self.toast.as_mut().filter(|toast| toast.card.is_some()) {
             // Already showing one: swap the text and restart the hold.
-            if now.saturating_sub(toast.start_ms) < total {
+            if now.saturating_sub(toast.start_ms) < NOTICE_ENTER_MS + toast.hold_ms {
+                toast.hold_ms = hold_ms;
                 toast.replaced = toast.card.take().map(|old| (old, now));
                 toast.card = Some(card);
                 toast.start_ms = now.saturating_sub(NOTICE_ENTER_MS);
@@ -2796,11 +3077,12 @@ impl Runtime {
             notice: true,
             card: Some(card),
             replaced: None,
+            hold_ms,
         });
         self.track_frame(now)
     }
 
-    /// Shows the notice kept while Touch ID or a slider was up, once they are done.
+    /// Shows the notice kept while Touch ID, a slider or the controls panel was up, once they are done.
     fn pending_card_due(&mut self, now: u64) -> Result<()> {
         if !self.pending_card_ms.is_some_and(|due| now >= due) {
             return Ok(());
@@ -2812,7 +3094,9 @@ impl Runtime {
         if now >= expires || self.screen_off() {
             return Ok(());
         }
-        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() {
+        if self.touch_id != TouchIdState::Idle || self.level_kind.is_some() || self.panel.is_some() {
+            // Con el panel en uso la tarjeta espera a que se cierre, sin caducar.
+            let expires = if self.panel.is_some() { expires.max(now + PENDING_CARD_MS) } else { expires };
             self.pending_card = Some((card, expires));
             self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
             return Ok(());
@@ -2834,7 +3118,7 @@ impl Runtime {
         }
         let now = self.now_ms();
         let (title, body) = if title.trim().is_empty() { (text, String::new()) } else { (title, text) };
-        let (title, body) = (fold_ascii(&strip_markup(&title)), fold_ascii(&strip_markup(&body)));
+        let (title, body) = (one_line(&strip_markup(&title)), one_line(&strip_markup(&body)));
         if title.is_empty() && body.is_empty() {
             return Ok(());
         }
@@ -2950,6 +3234,10 @@ impl Runtime {
         self.positions.insert(slot, x);
         match self.contacts.get(&slot).copied() {
             Some(Contact::Swipe) => self.swipe_moved(now),
+            Some(Contact::NoticeTouch { start_x, .. }) => {
+                self.contacts.insert(slot, Contact::NoticeTouch { start_x, x });
+                Ok(())
+            }
             Some(Contact::Pending) => {
                 let Some(pending) = self.pending else {
                     return Ok(());
@@ -2973,13 +3261,15 @@ impl Runtime {
                 Ok(())
             }
             Some(Contact::Panel(slider)) => {
-                let level = renderer::panel_level(
-                    self.panel_zone,
-                    self.plus.controls.items.len(),
-                    slider,
-                    x,
-                );
-                self.panel_set(slider, level, now, false)
+                let part = self.panel.as_ref().and_then(|p| p.repeat.as_ref()).map(|r| r.part);
+                if self.panel_touch(x, y) != part.map(|part| (slider, part)) {
+                    if let Some(panel) = self.panel.as_mut() {
+                        panel.repeat = None;
+                    }
+                    self.contacts.insert(slot, Contact::Cancelled);
+                    return self.refresh_widgets();
+                }
+                Ok(())
             }
             Some(Contact::Scrub(_)) => {
                 if let Some(scrub) = self.scrub.as_mut() {
@@ -3122,6 +3412,30 @@ impl Runtime {
         self.resolve_pending(now)?;
         self.positions.remove(&slot);
         match self.contacts.remove(&slot) {
+            Some(Contact::NoticeTouch { start_x, x }) => {
+                if (x - start_x).abs() >= 40.0 {
+                    // Deslizada: sale con la animación de salida.
+                    if let Some(toast) = self.toast.as_mut().filter(|toast| toast.notice) {
+                        toast.start_ms = now.saturating_sub(NOTICE_ENTER_MS + toast.hold_ms);
+                        self.haptic.click();
+                        return self.track_frame(now);
+                    }
+                    return Ok(());
+                }
+                // Un toque en un mensaje lleva a la app que lo envió.
+                let app = self
+                    .toast
+                    .as_ref()
+                    .and_then(|toast| toast.card.as_ref())
+                    .map(|card| card.app.clone())
+                    .filter(|app| !app.is_empty());
+                if let Some(app) = app {
+                    std::thread::spawn(move || shell::focus_app(&app));
+                }
+                if self.toast.as_ref().is_some_and(|toast| toast.notice) {
+                    self.toast_done()?;
+                }
+            }
             Some(Contact::Pending) => {
                 // Lifted within the window: a plain tap.
                 if let Some(pending) = self.pending.take() {
@@ -3147,21 +3461,11 @@ impl Runtime {
                     }
                 }
             }
-            Some(Contact::Panel(slider)) => {
-                // The last level always goes out, even if throttled before.
-                let x = self.positions.get(&slot).copied().unwrap_or_default();
-                let level = self.panel.as_ref().and_then(|panel| {
-                    panel.levels[self.plus.controls.items.get(slider)?.index()]
-                });
-                if let (Some(level), Some(control)) =
-                    (level, self.plus.controls.items.get(slider).copied())
-                {
-                    levels::set_control(control, level);
-                }
-                let _ = x;
+            Some(Contact::Panel(_)) => {
                 if let Some(panel) = self.panel.as_mut() {
-                    panel.active = None;
+                    panel.repeat = None;
                     panel.until_ms = now + self.plus.controls.timeout_ms;
+                    panel.reread_ms = Some(now + PANEL_REREAD_MS);
                 }
                 self.refresh_widgets()?;
             }
@@ -3186,15 +3490,20 @@ impl Runtime {
                 self.active_button = None;
                 self.present_keys()?;
             }
-            Some(Contact::SliderHold(index)) => {
-                // Released before the slider opened: an ordinary key tap.
-                self.slider_hold = None;
-                self.press_button(index, now)?;
-                self.keyboard.release()?;
-                self.haptic.key_release();
-                self.active_button = None;
-                self.present_keys()?;
-            }
+            Some(Contact::LevelHold(index)) => match self.level_hold.take() {
+                Some(LevelHold { start_ms: Some(_), .. }) => {
+                    self.overlay_hide_ms = Some(now + LEVEL_LINGER_MS);
+                    self.touches_armed = true;
+                }
+                _ => {
+                    // Soltado antes de repetir: toque normal de la tecla.
+                    self.press_button(index, now)?;
+                    self.keyboard.release()?;
+                    self.haptic.key_release();
+                    self.active_button = None;
+                    self.present_keys()?;
+                }
+            },
             Some(Contact::Scrub(index)) => {
                 if let Some(scrub) = self.scrub.take() {
                     if (scrub.x - scrub.start_x).abs() < 12.0 {
@@ -3495,8 +3804,9 @@ impl Runtime {
         {
             self.activity_timeout();
         }
-        self.slider_due(now)?;
+        self.level_hold_due(now)?;
         self.caffeine_hold_due(now)?;
+        self.panel_repeat_due(now)?;
         self.panel_tick(now)?;
         self.transient_tick(now)?;
         self.pomodoro_tick(now)?;
@@ -3579,12 +3889,15 @@ impl Runtime {
             deadlines.push(deadline);
         }
         deadlines.extend(self.dim_deadline_ms);
-        deadlines.extend(self.slider_hold.as_ref().map(|hold| hold.due_ms));
+        deadlines.extend(self.off_deadline_ms);
+        deadlines.extend(self.level_hold.as_ref().map(|hold| hold.due_ms));
         deadlines.extend(self.caffeine_due.map(|(_, _, _, due, _)| due));
         deadlines.extend(self.transient.as_ref().map(|t| t.until_ms));
         deadlines.extend(self.windows_missing_until_ms);
         deadlines.extend(self.pomo_next_ms);
         deadlines.extend(self.panel.as_ref().map(|panel| panel.until_ms));
+        deadlines.extend(self.panel.as_ref().and_then(|p| p.repeat.as_ref()).map(|r| r.next_ms));
+        deadlines.extend(self.panel.as_ref().and_then(|p| p.read_ms));
         deadlines.extend(self.widgets_next_ms);
         deadlines.extend(self.np_next_ms);
         deadlines.extend(self.toggles_next_ms);
@@ -3673,19 +3986,39 @@ fn snapshot_touch_id(prefix: &str, styles: &str) -> Result<()> {
         look.style = style;
         for state in renderer::TOUCH_ID_STATES {
             canvas.touch_id(&look, state, 0.7, None, false);
-            let mut rgb = Vec::with_capacity(canvas.pixels.len() * 3);
-            for pixel in &canvas.pixels {
-                rgb.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
-            }
-            image::save_buffer(
-                format!("{prefix}-{style}-{state}.png"),
-                &rgb,
-                u32::from(canvas.width),
-                u32::from(canvas.height),
-                image::ExtendedColorType::Rgb8,
-            )?;
+            save_png(&canvas, &format!("{prefix}-{style}-{state}.png"))?;
         }
     }
+    Ok(())
+}
+
+/// `<prefix>-<style>-<layer>.png` of the F and special layers in each key style.
+fn snapshot_keys(prefix: &str, styles: &str) -> Result<()> {
+    let config = Config::load()?;
+    let mut canvas = Canvas::new(2008, 60, canvas_color(&config))?;
+    canvas.full_color = config.icon_color == "full";
+    for style in styles.chars() {
+        canvas.key_style = style;
+        for (mode, name) in [(Mode::Function, "function"), (Mode::Special, "special")] {
+            canvas.keys_with(&Layout::new(mode, 2008, false), None, None);
+            save_png(&canvas, &format!("{prefix}-{style}-{name}.png"))?;
+        }
+    }
+    Ok(())
+}
+
+fn save_png(canvas: &Canvas, path: &str) -> Result<()> {
+    let mut rgb = Vec::with_capacity(canvas.pixels.len() * 3);
+    for pixel in &canvas.pixels {
+        rgb.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
+    }
+    image::save_buffer(
+        path,
+        &rgb,
+        u32::from(canvas.width),
+        u32::from(canvas.height),
+        image::ExtendedColorType::Rgb8,
+    )?;
     Ok(())
 }
 
@@ -3694,6 +4027,7 @@ fn snapshot(path: &str) -> Result<()> {
     let plus = layout::load();
     let mut canvas = Canvas::new(2008, 60, canvas_color(&config))?;
     canvas.full_color = config.icon_color == "full";
+    canvas.key_style = config.key_style.chars().next().unwrap_or('A');
     let ctx = LayoutCtx { player_active: true, ..LayoutCtx::default() };
     let mut data = widgets::WidgetData {
         clock: "19:45".into(),
@@ -3720,7 +4054,7 @@ fn snapshot(path: &str) -> Result<()> {
         )?;
         Ok(())
     };
-    let bar = Layout::from_placed(&plus.default, &plus.default_slots, &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let bar = Layout::from_placed(&plus.default, &plus.default_slots, &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.keys_with(&bar, None, Some(&data));
     save(&canvas, std::path::Path::new(path))?;
 
@@ -3731,7 +4065,7 @@ fn snapshot(path: &str) -> Result<()> {
         .position(|item| *item == ItemKind::Controls)
         .and_then(|at| plus.default_slots.get(at).copied())
         .unwrap_or_default();
-    let layout = Layout::from_placed(&zone, &[controls_slot], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let layout = Layout::from_placed(&zone, &[controls_slot], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     let left = layout
         .buttons
         .iter()
@@ -3750,7 +4084,7 @@ fn snapshot(path: &str) -> Result<()> {
             .iter()
             .map(|control| widgets::PanelRow { icon: control.icon(), percent: Some(if control.index() == 0 { 100 } else { 50 }) })
             .collect(),
-        active: None,
+        pressed: None,
     });
     canvas.keys_with(&layout, None, Some(&data));
     let panel_path = std::path::Path::new(path).with_extension("panel.png");
@@ -3762,7 +4096,7 @@ fn snapshot(path: &str) -> Result<()> {
     canvas.clear();
     data.panel = None;
     let dialog = dialog_row("Close Tab?", &["Cancel", "Close"]);
-    let dialog_layout = Layout::from_placed(&dialog, &[], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let dialog_layout = Layout::from_placed(&dialog, &[], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.keys_with(&dialog_layout, None, Some(&data));
     save(&canvas, &std::path::Path::new(path).with_extension("dialog.png"))?;
     let app = |id: &str, name: &str, windows: &[&str]| {
@@ -3777,7 +4111,7 @@ fn snapshot(path: &str) -> Result<()> {
         ],
     };
     let row = switcher_row(&switcher);
-    let switcher_layout = Layout::from_placed(&row, &[], &plus.strip, &plus.strip_slots, 2008, true, &ctx);
+    let switcher_layout = Layout::from_placed(&row, &[], &plus.strip, &plus.strip_slots, plus.strip_col, 2008, true, &ctx);
     canvas.clear();
     canvas.keys_with(&switcher_layout, None, Some(&data));
     save(&canvas, &std::path::Path::new(path).with_extension("switcher.png"))?;
@@ -3791,7 +4125,7 @@ fn snapshot(path: &str) -> Result<()> {
     };
     let next = renderer::NoticeCard { title: "New message".into(), body: "Ana: are we still on for lunch?".into(), icon: renderer::NoticeIcon::Lucide("bell"), app: String::new() };
     for (name, enter, leave, swap) in [("enter", 0.55, 0.0, None), ("hold", 1.0, 0.0, None), ("swap", 1.0, 0.0, Some(0.5)), ("leave", 1.0, 0.5, None)] {
-        let motion = renderer::NoticeMotion { enter, leave, remain: 0.6, swap };
+        let motion = renderer::NoticeMotion { enter, leave, remain: 0.6, swap, scroll_ms: 0 };
         if swap.is_some() {
             canvas.notice_card(&next, Some(&card), motion, 1500.0, false);
         } else {
@@ -3830,6 +4164,13 @@ fn main() -> Result<()> {
             .context("--snapshot-touchid needs an output prefix")?;
         let styles = std::env::args().nth(position + 2).unwrap_or_else(|| "ABCDEF".into());
         return snapshot_touch_id(&prefix, &styles);
+    }
+    if let Some(position) = std::env::args().position(|arg| arg == "--snapshot-keys") {
+        let prefix = std::env::args()
+            .nth(position + 1)
+            .context("--snapshot-keys needs an output prefix")?;
+        let styles = std::env::args().nth(position + 2).unwrap_or_else(|| "ABCD".into());
+        return snapshot_keys(&prefix, &styles);
     }
     if let Some(position) = std::env::args().position(|arg| arg == "--snapshot") {
         let path = std::env::args()
@@ -3871,6 +4212,7 @@ fn main() -> Result<()> {
     shell::watch(bus.clone())?;
     atspi::watch(bus.clone(), runtime.dialog_poll.clone())?;
     weather::watch(bus.clone(), runtime.plus.weather.clone())?;
+    hilda::watch(bus.clone())?;
     if runtime.plus.default.iter().chain(&runtime.plus.strip).chain(runtime.plus.profiles.iter().flat_map(|p| &p.items)).any(|item| *item == ItemKind::NextEvent) {
         calendar::watch(bus.clone())?;
     }
@@ -3998,6 +4340,7 @@ fn main() -> Result<()> {
                     events::Ext::Dialog(dialog) => runtime.dialog_changed(dialog)?,
                     events::Ext::Apps(apps) => runtime.apps_listed(apps)?,
                     events::Ext::Art(url, gray) => runtime.art_loaded(url, gray)?,
+                    events::Ext::HildaFrame(sprite) => runtime.hilda_frame(sprite)?,
                     events::Ext::Toggles(states) => runtime.toggles_changed(states)?,
                     events::Ext::Events(events) => runtime.events_changed(events)?,
                     events::Ext::Weather(weather) => runtime.weather_changed(weather)?,
@@ -4161,6 +4504,12 @@ mod tests {
     }
 
     #[test]
+    fn one_line_keeps_accents() {
+        assert_eq!(super::one_line("Árbol\tñandú\n"), "Árbol ñandú");
+        assert_eq!(super::one_line("   "), "");
+    }
+
+    #[test]
     fn fold_ascii_never_returns_empty() {
         assert_eq!(super::fold_ascii("日本"), "-");
         assert_eq!(super::fold_ascii("Árbol\tß"), "Arbol ss");
@@ -4180,18 +4529,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hold_turns_volume_key_into_slider() {
-        assert_eq!(
-            slider_kind(Action::Key(Key::VolumeUp)),
-            Some(LevelKind::Volume)
-        );
-        assert_eq!(slider_kind(Action::Key(Key::Mute)), Some(LevelKind::Volume));
-        assert_eq!(
-            slider_kind(Action::Key(Key::BrightnessDown)),
-            Some(LevelKind::Brightness)
-        );
-        assert_eq!(slider_kind(Action::Key(Key::PlayPause)), None);
-        assert_eq!(slider_kind(Action::Item(0)), None);
+    fn hold_repeats_volume_and_brightness() {
+        use layout::Control;
+        assert_eq!(hold_control(Action::Key(Key::VolumeUp)), Some((Control::Volume, 1)));
+        assert_eq!(hold_control(Action::Key(Key::BrightnessDown)), Some((Control::Brightness, -1)));
+        assert_eq!(hold_control(Action::Key(Key::Mute)), None);
+        assert_eq!(hold_control(Action::Key(Key::PlayPause)), None);
+        assert_eq!(hold_control(Action::Item(0)), None);
         // One finger then steps like the multi-finger swipe does.
         let mut swipe = Swipe::new(SwipeKind::Volume, 500.0, 40.0);
         assert_eq!(swipe.advance(581.0), 2);

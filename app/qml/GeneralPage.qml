@@ -41,9 +41,15 @@ PageColumn {
         }
         StepRow {
             title: app.tt("Atenuar tras (segundos, 0 = nunca)")
-            value: app.get(page.cfg, "dim_after_ms", 120000) / 1000
+            value: app.get(page.cfg, "dim_after_ms", 60000) / 1000
             from: 0; to: 3600; step: 10
             onMoved: (v) => { page.cfg.dim_after_ms = v * 1000; app.bump() }
+        }
+        StepRow {
+            title: app.tt("Apagar tras (minutos, 0 = nunca)")
+            value: app.get(page.cfg, "off_after_ms", 300000) / 60000
+            from: 0; to: 120; step: 1
+            onMoved: (v) => { page.cfg.off_after_ms = v * 60000; app.bump() }
         }
         SwitchRow {
             last: true
@@ -104,7 +110,7 @@ PageColumn {
         }
         StepRow {
             last: true
-            title: app.tt("Mantener para abrir el slider (ms)")
+            title: app.tt("Mantener volumen/brillo para repetir (ms)")
             value: app.get(page.cfg, "hold_slider_ms", 500)
             from: 200; to: 1500; step: 50
             onMoved: (v) => { page.cfg.hold_slider_ms = v; app.bump() }
@@ -117,6 +123,12 @@ PageColumn {
             title: app.tt("Notificaciones en la barra")
             checked: !!app.get(page.cfg, "notifications", true)
             onToggled: (v) => { page.cfg.notifications = v; app.bump() }
+        }
+        StepRow {
+            title: app.tt("Duración de la notificación (ms)")
+            value: app.get(page.cfg, "notice_hold_ms", 4500)
+            from: 2000; to: 20000; step: 500
+            onMoved: (v) => { page.cfg.notice_hold_ms = v; app.bump() }
         }
         SwitchRow {
             title: app.tt("Sugerencias de escritura")

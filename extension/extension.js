@@ -19,6 +19,10 @@ const XML = `
     </signal>
     <signal name="Suggestions"><arg type="as" name="items"/></signal>
     <signal name="SuggestionsHidden"/>
+    <method name="GetPointer">
+      <arg type="i" direction="out" name="dx"/><arg type="i" direction="out" name="dy"/>
+      <arg type="u" direction="out" name="width"/><arg type="u" direction="out" name="height"/>
+    </method>
     <method name="GetFocus"><arg type="s" direction="out" name="app_id"/></method>
     <method name="ListWindows"><arg type="a(uss)" direction="out" name="windows"/></method>
     <method name="ListApps"><arg type="a(ssa(us))" direction="out" name="apps"/></method>
@@ -177,6 +181,18 @@ export default class TouchbarPlusExtension extends Extension {
             panelService.connect('hide-lookup-table', () => {
                 this._emit('SuggestionsHidden', null);
             }));
+    }
+
+    // Pointer relative to the center of the primary monitor, and that monitor's size: Hilda's eyes follow it.
+    GetPointer() {
+        const [x, y] = global.get_pointer();
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor)
+            return GLib.Variant.new('(iiuu)', [0, 0, 0, 0]);
+        return GLib.Variant.new('(iiuu)', [
+            Math.round(x - monitor.x - monitor.width / 2),
+            Math.round(y - monitor.y - monitor.height / 2),
+            monitor.width, monitor.height]);
     }
 
     GetFocus() {

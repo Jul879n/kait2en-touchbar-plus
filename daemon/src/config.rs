@@ -34,17 +34,23 @@ pub struct Config {
     pub show_track_changes: bool,
     pub always_on: bool,
     pub dim_after_ms: u64,
+    pub off_after_ms: u64,
     pub dim_brightness: u32,
     pub pixel_shift: bool,
     pub pixel_shift_interval_ms: u64,
     pub screen_lock_dark: bool,
     pub notifications: bool,
+    /// Tiempo visible de una notificación.
+    pub notice_hold_ms: u64,
     pub suggestions: bool,
+    /// Mantener volumen/brillo este tiempo para repetir ±1 %.
     pub hold_slider_ms: u64,
     /// `auto` (system locale), `es` or `en`.
     pub language: String,
     /// `mono` (key color) or `full` (a color per icon, app icons in color).
     pub icon_color: String,
+    /// Style of the F, special and esc keys: `A` outline, `B` tinted, `C` solid, `D` neon.
+    pub key_style: String,
     /// Touch ID prompt: look `A` to `F`, a color per state (`auto` follows
     /// the key color), a text per state (empty uses the language) and motion.
     pub touch_id_style: String,
@@ -82,16 +88,19 @@ impl Default for Config {
             activity_timeout_ms: 30_000,
             show_track_changes: true,
             always_on: true,
-            dim_after_ms: 120_000,
+            dim_after_ms: 60_000,
+            off_after_ms: 300_000,
             dim_brightness: 1,
             pixel_shift: true,
             pixel_shift_interval_ms: 180_000,
             screen_lock_dark: true,
             notifications: true,
+            notice_hold_ms: 4_500,
             suggestions: true,
             hold_slider_ms: 400,
             language: "auto".into(),
             icon_color: "mono".into(),
+            key_style: "A".into(),
             touch_id_style: "F".into(),
             touch_id_color_waiting: "auto".into(),
             touch_id_color_retry: "#ff9f0a".into(),
@@ -166,8 +175,18 @@ impl Config {
             "dim_after_ms must be 0 (never) or at least 10000"
         );
         anyhow::ensure!(
+            self.off_after_ms == 0
+                || (self.off_after_ms >= 10_000
+                    && (self.dim_after_ms == 0 || self.off_after_ms > self.dim_after_ms)),
+            "off_after_ms must be 0 (never) or greater than dim_after_ms"
+        );
+        anyhow::ensure!(
             self.dim_brightness <= self.active_brightness,
             "dim_brightness must not exceed active_brightness"
+        );
+        anyhow::ensure!(
+            (2_000..=20_000).contains(&self.notice_hold_ms),
+            "notice_hold_ms must be 2000..20000"
         );
         anyhow::ensure!(
             (200..=1500).contains(&self.hold_slider_ms),
@@ -180,6 +199,10 @@ impl Config {
         anyhow::ensure!(
             matches!(self.icon_color.as_str(), "mono" | "full"),
             "icon_color must be mono or full"
+        );
+        anyhow::ensure!(
+            matches!(self.key_style.as_str(), "A" | "B" | "C" | "D"),
+            "key_style must be A, B, C or D"
         );
         anyhow::ensure!(
             matches!(self.touch_id_style.as_str(), "A" | "B" | "C" | "D" | "E" | "F"),
@@ -342,10 +365,19 @@ mod tests {
         let mut config: Config = toml::from_str("").unwrap();
         config.validate().unwrap();
         assert!(config.always_on);
-        assert_eq!(config.dim_after_ms, 120_000);
+        assert_eq!(config.dim_after_ms, 60_000);
+        assert_eq!(config.off_after_ms, 300_000);
         assert_eq!(config.hold_slider_ms, 400);
+        assert_eq!(config.notice_hold_ms, 4_500);
+        assert_eq!(config.key_style, "A");
         let mut bad: Config = toml::from_str("dim_after_ms = 500").unwrap();
         let error = bad.validate().unwrap_err().to_string();
         assert!(error.contains("dim_after_ms must be"), "{error}");
+        let mut bad: Config = toml::from_str("off_after_ms = 30000").unwrap();
+        let error = bad.validate().unwrap_err().to_string();
+        assert!(error.contains("off_after_ms must be"), "{error}");
+        let mut bad: Config = toml::from_str("key_style = \"Z\"").unwrap();
+        let error = bad.validate().unwrap_err().to_string();
+        assert!(error.contains("key_style must be"), "{error}");
     }
 }

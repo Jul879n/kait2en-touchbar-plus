@@ -8,7 +8,6 @@ Item {
     property var app
     property var zone: "default"        // "default" or the profile index
     property var sel: null              // { list: "zone" | "strip", index }
-    property bool toStrip: false
     property int tabsRev: 0
     property var indicator: null        // where a drop would land: { list, col, span, ok }
 
@@ -45,14 +44,17 @@ Item {
         var z = arr("zone"), s = arr("strip"), total = 0, i
         for (i = 0; i < s.length; i++) total += spanOf(s[i])
         var zp = placeList(z, 0)
-        var sp = placeList(s, Math.max(Theme.gridCols - total, zp.end))
+        var fixed = st.layout.strip_col ? st.layout.strip_col - 1 : -1
+        var sp = placeList(s, Math.max(fixed >= 0 ? fixed : Theme.gridCols - total, zp.end))
+        var divider = fixed >= 0 ? Math.max(fixed, zp.end) : (s.length ? sp.places[0].col : Math.max(Theme.gridCols, zp.end))
         var cells = []
         for (i = 0; i < z.length; i++) cells.push({ item: z[i], list: "zone", index: i, col: zp.places[i].col, span: zp.places[i].span })
         for (i = 0; i < s.length; i++) cells.push({ item: s[i], list: "strip", index: i, col: sp.places[i].col, span: sp.places[i].span })
-        return { cells: cells, columns: Math.max(Theme.gridCols, zp.end, sp.end) }
+        return { cells: cells, columns: Math.max(Theme.gridCols, zp.end, sp.end), divider: divider, zoneEnd: zp.end, stripFixed: fixed >= 0 }
     }
     readonly property var grid: { app.rev; zone; return layoutAll() }
     readonly property int columns: grid.columns
+    readonly property int divider: grid.divider
     readonly property real colW: (track.width - gap * (columns - 1)) / columns
     function colX(col) { return col * (colW + gap) }
     function spanW(span) { return span * colW + (span - 1) * gap }
@@ -84,8 +86,10 @@ Item {
         arr("strip").sort(by)
     }
     // Columns an item may take: free of other items and inside the grid.
-    function fits(col, span, skip) {
-        if (col < 0 || col + span > columns) return false
+    function region(list) { return list === "zone" ? { lo: 0, hi: grid.divider } : { lo: grid.stripFixed ? grid.divider : grid.zoneEnd, hi: columns } }
+    function fits(col, span, skip, list) {
+        var r = region(list)
+        if (col < r.lo || col + span > r.hi) return false
         var cells = grid.cells
         for (var i = 0; i < cells.length; i++) {
             if (skip && cells[i].list === skip.list && cells[i].index === skip.index) continue
@@ -94,10 +98,10 @@ Item {
         return true
     }
     // The valid column nearest to `col`, or -1.
-    function nearest(col, span, skip) {
+    function nearest(col, span, skip, list) {
         for (var d = 0; d < columns; d++) {
-            if (fits(col - d, span, skip)) return col - d
-            if (d > 0 && fits(col + d, span, skip)) return col + d
+            if (fits(col - d, span, skip, list)) return col - d
+            if (d > 0 && fits(col + d, span, skip, list)) return col + d
         }
         return -1
     }
@@ -139,19 +143,19 @@ Item {
     }
 
     function addItem(item) {
-        var span = Theme.colsOf(item), list = toStrip ? "strip" : "zone", col = -1
-        if (toStrip) {
-            for (var c = columns - span; c >= 0; c--) if (fits(c, span, null)) { col = c; break }
-        } else {
-            for (var d = 0; d + span <= columns; d++) if (fits(d, span, null)) { col = d; break }
+        var span = Theme.colsOf(item), list = sel && sel.list === "strip" ? "strip" : "zone", r = region(list), col = -1
+        for (var c = r.lo; c + span <= r.hi; c++) if (fits(c, span, null, list)) { col = c; break }
+        if (col < 0) {
+            app.toast(app.tt(list === "strip" ? "No hay espacio en el strip: arrastre el divisor a la izquierda o quite un ítem."
+                                              : "No hay espacio en la zona de app: quite o achique un ítem, o arrastre el divisor a la derecha."))
+            return
         }
-        if (col < 0) { app.toast(app.tt("No hay espacio libre en la barra.")); return }
         place(item, list, col, span, null)
     }
     function moveSelected(delta) {
         var cell = selectedCell()
         if (!cell) return
-        if (!fits(cell.col + delta, cell.span, { list: cell.list, index: cell.index })) return
+        if (!fits(cell.col + delta, cell.span, { list: cell.list, index: cell.index }, cell.list)) return
         var item = arr(cell.list)[cell.index]
         materialize()
         item.col = cell.col + delta + 1
@@ -164,7 +168,7 @@ Item {
         if (!cell) return false
         var item = arr(cell.list)[cell.index]
         span = Math.max(Theme.minCols(item), span)
-        if (!fits(col, span, { list: cell.list, index: cell.index })) { app.toast(app.tt("Esas columnas están ocupadas.")); return false }
+        if (!fits(col, span, { list: cell.list, index: cell.index }, cell.list)) { app.toast(app.tt("Esas columnas están ocupadas.")); return false }
         materialize()
         item.col = col + 1
         item.span = span
@@ -172,6 +176,32 @@ Item {
         selectItem(item)
         app.bump()
         return true
+    }
+    // Drops the items of `list` that `keep(place)` rejects; returns how many went.
+    function dropWhere(list, keep) {
+        var places = placeList(list, 0).places, removed = 0
+        for (var i = list.length - 1; i >= 0; i--)
+            if (!keep(places[i])) { list.splice(i, 1); removed++ }
+        return removed
+    }
+    // Moves the divider to `col`; what no longer fits on its side is removed (every profile's zone, and the shared strip).
+    function setStripStart(col) {
+        col = Math.max(0, Math.min(Theme.gridCols, col))
+        if (col === grid.divider) return
+        materialize()
+        var removed = 0, profiles = st.layout.profile || [], i
+        var inZone = (pl) => pl.col + pl.span <= col
+        removed += dropWhere(st.layout["default"], inZone)
+        for (i = 0; i < profiles.length; i++)
+            if (profiles[i].items) removed += dropWhere(profiles[i].items, inZone)
+        var strip = st.layout.strip
+        for (i = strip.length - 1; i >= 0; i--)
+            if (strip[i].col - 1 < col) { strip.splice(i, 1); removed++ }
+        if (col >= Theme.gridCols) delete st.layout.strip_col
+        else st.layout.strip_col = col + 1
+        sel = null
+        app.bump()
+        if (removed > 0) app.toast(app.tt("Se quitaron ítems que no cabían: ") + removed)
     }
     function removeSelected() {
         if (!sel) return
@@ -189,13 +219,8 @@ Item {
         var span = Theme.colsOf(item), pitch = colW + gap
         var left = px - data.grabX
         var col = Math.max(0, Math.min(columns - span, Math.round(left / pitch)))
-        var good = nearest(col, span, data.from ? data.from : null)
-        var list = data.from ? data.from.list : (toStrip ? "strip" : "zone")
-        var strip = arr("strip")
-        if (data.from && strip.length > 0) {
-            var first = grid.cells.filter((c) => c.list === "strip")[0]
-            list = (good >= 0 ? good : col) >= first.col ? "strip" : "zone"
-        }
+        var list = col + span / 2 >= divider ? "strip" : "zone"
+        var good = nearest(col, span, data.from ? data.from : null, list)
         return { list: list, col: good >= 0 ? good : col, span: span, ok: good >= 0 }
     }
     function dropAt(gx, gy) {
@@ -223,7 +248,7 @@ Item {
         var span = Math.round((p.x - colX(cell.col)) / (colW + gap) + 0.5)
         var item = arr(cell.list)[cell.index]
         span = Math.max(Theme.minCols(item), Math.min(columns - cell.col, span))
-        if (span === cell.span || !fits(cell.col, span, { list: cell.list, index: cell.index })) return
+        if (span === cell.span || !fits(cell.col, span, { list: cell.list, index: cell.index }, cell.list)) return
         materialize()
         item.col = cell.col + 1
         item.span = span
@@ -291,6 +316,17 @@ Item {
                 }
             }
 
+            Item {
+                width: parent.width
+                height: 16
+                Text { id: zoneLabel; x: 10; text: app.tt("Zona de app · cambia según el perfil"); color: Theme.mu; font.pixelSize: 12 }
+                Text {
+                    visible: page.divider < page.columns
+                    x: Math.max(zoneLabel.x + zoneLabel.width + 16, Math.min(10 + page.colX(page.divider), parent.width - 10 - width))
+                    text: app.tt("Strip fijo · igual en todos los perfiles"); color: Theme.mu; font.pixelSize: 12
+                }
+            }
+
             Rectangle {
                 width: parent.width
                 height: 68
@@ -305,6 +341,12 @@ Item {
                     width: parent.width - 20
                     height: 40
 
+                    Rectangle {
+                        visible: page.divider < page.columns
+                        x: page.colX(page.divider) - page.gap / 2
+                        y: -6; width: track.width + 4 - x; height: 52; radius: 9
+                        color: "#0f1a2e"; border.width: 1; border.color: "#1f3a66"
+                    }
                     Repeater {
                         model: page.columns
                         Rectangle {
@@ -342,6 +384,19 @@ Item {
                             onResizeMoved: (x) => page.resizeTo(cell, x)
                             onDragMoved: (x, y) => Dnd.move(x, y)
                             onDragEnded: (x, y) => Dnd.end(x, y)
+                        }
+                    }
+                    Rectangle {
+                        x: page.colX(page.divider) - page.gap / 2 - width / 2
+                        y: -6; width: 6; height: 52; radius: 3
+                        color: dividerArea.containsMouse || dividerArea.pressed ? Theme.ac : Theme.line2
+                        Accessible.name: app.tt("Divisor entre zona de app y strip")
+                        MouseArea {
+                            id: dividerArea
+                            anchors.fill: parent; anchors.margins: -2
+                            hoverEnabled: true; preventStealing: true
+                            cursorShape: Qt.SplitHCursor
+                            onPositionChanged: (m) => { if (pressed) page.setStripStart(Math.round(mapToItem(track, m.x, m.y).x / (page.colW + page.gap))) }
                         }
                     }
                     Rectangle {
@@ -395,13 +450,18 @@ Item {
                             spacing: 10
                             readonly property string icn: ({ "volume": "volume-2", "brightness": "sun", "keyboard": "keyboard" })[modelData] || "sliders-horizontal"
                             Icon { anchors.verticalCenter: parent.verticalCenter; name: parent.icn; size: 22; tint: Theme.tint(parent.icn, page.fullColor) }
-                            Item {
+                            Row {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 32
-                                height: 20
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 6; radius: 3; color: Theme.line }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width * 0.5; height: 6; radius: 3; color: Theme.glow }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; x: parent.width * 0.5 - 9; width: 18; height: 18; radius: 9; color: Theme.glow }
+                                spacing: 8
+                                Rectangle {
+                                    width: 40; height: 32; radius: 8; color: Theme.line
+                                    Text { anchors.centerIn: parent; text: "−"; color: Theme.glow; font.pixelSize: 18 }
+                                }
+                                Text { anchors.verticalCenter: parent.verticalCenter; text: "50%"; color: Theme.glow; font.pixelSize: 14 }
+                                Rectangle {
+                                    width: 40; height: 32; radius: 8; color: Theme.line
+                                    Text { anchors.centerIn: parent; text: "+"; color: Theme.glow; font.pixelSize: 18 }
+                                }
                             }
                         }
                     }
@@ -429,12 +489,7 @@ Item {
                 spacing: 12
                 bottomPadding: 18
                 Heading { text: app.tt("Paleta") }
-                Row {
-                    spacing: 8
-                    Text { anchors.verticalCenter: parent.verticalCenter; text: app.tt("Agregar a:"); color: Theme.tx; font.pixelSize: 14 }
-                    Btn { kind: "tab"; text: app.tt("Zona de app"); checked: !page.toStrip; onClicked: page.toStrip = false }
-                    Btn { kind: "tab"; text: app.tt("Strip fijo"); checked: page.toStrip; onClicked: page.toStrip = true }
-                }
+                Text { width: parent.width; wrapMode: Text.WordWrap; color: Theme.mu; font.pixelSize: 13; text: app.tt("Arrastre a la barra: a la izquierda del divisor va a la zona de app; a la derecha, al strip fijo. Con un clic se agrega a la zona de app, o al strip si tiene un ítem del strip seleccionado.") }
                 Flow {
                     width: parent.width
                     spacing: 8
@@ -571,7 +626,7 @@ Item {
                             visible: insp.item !== null && insp.item.type === "controls"
                             width: parent.width
                             Repeater {
-                                model: [["volume", "Mostrar el slider de volumen"], ["brightness", "Mostrar el slider de brillo"], ["keyboard", "Mostrar el slider de luz del teclado"]]
+                                model: [["volume", "Mostrar el control de volumen"], ["brightness", "Mostrar el control de brillo"], ["keyboard", "Mostrar el control de luz del teclado"]]
                                 SwitchRow {
                                     title: app.tt(modelData[1])
                                     checked: app.get(st.layout.controls, "items", []).indexOf(modelData[0]) >= 0
@@ -579,7 +634,7 @@ Item {
                                         var items = st.layout.controls.items, at = items.indexOf(modelData[0])
                                         if (v && at < 0) items.push(modelData[0])
                                         else if (!v && at >= 0) {
-                                            if (items.length === 1) { app.bump(); app.toast(app.tt("Deje al menos un slider.")); return }
+                                            if (items.length === 1) { app.bump(); app.toast(app.tt("Deje al menos un control.")); return }
                                             items.splice(at, 1)
                                         }
                                         app.bump()

@@ -33,3 +33,5 @@ Restaurar: `./restore.sh backup/2026-10-28_1851`
 - [x] App nueva (maqueta B): escenario, perfiles como pestañas, paleta, inspector, apariencia y restaurar.
 - [x] `icon_color = "full"` y ítems `app` con ícono real (código y `--check-config` verificados).
 - [ ] Pendiente en vivo: ver el color completo y un ícono de app en la barra física.
+
+- [x] Ojos de Hilda (`hilda`): reemplazan al ítem `pet`; código y pruebas listas. - [ ] Pendiente en vivo: instalar, cerrar sesión para cargar `GetPointer` y ver que sigan el cursor y se duerman.

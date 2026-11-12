@@ -50,15 +50,20 @@ always_on = true
 # Apagar la barra al bloquear o apagarse la pantalla. Un toque la enciende 2 min.
 screen_lock_dark = true
 # Atenuar tras este tiempo sin uso (0 = nunca) al nivel dim_brightness.
-dim_after_ms = 120000
+dim_after_ms = 60000
+# Apagar la barra tras este tiempo sin uso del equipo (0 = nunca). Tocarla la
+# reactiva. Debe ser mayor que dim_after_ms.
+off_after_ms = 300000
 dim_brightness = 1
 # Mover la imagen 1 px cada intervalo para proteger el OLED.
 pixel_shift = true
 pixel_shift_interval_ms = 180000
 # Tarjeta animada de notificaciones y sugerencias de escritura.
 notifications = true
+# Tiempo que se ve cada notificación (ms).
+notice_hold_ms = 4500
 suggestions = true
-# Mantener volumen/brillo este tiempo para abrir el slider.
+# Mantener volumen/brillo este tiempo para repetir ±1 %.
 hold_slider_ms = 400
 
 # Idioma de los textos de la barra: auto (según el sistema), es o en.
@@ -66,6 +71,9 @@ language = "auto"
 
 # Color de los íconos: mono (color de teclas) o full (un color por ícono y apps a color).
 icon_color = "mono"
+
+# Estilo de las teclas F, especiales y esc: A contorno, B tintado, C sólido, D neón.
+key_style = "A"
 
 # Pantalla de Touch ID. Estilo A a F (F = resplandor desde el sensor).
 touch_id_style = "F"

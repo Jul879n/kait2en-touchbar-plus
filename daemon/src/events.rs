@@ -50,6 +50,8 @@ pub enum Ext {
     Events(Vec<crate::calendar::Event>),
     /// The dialog open in the focused window, or none.
     Dialog(Option<crate::atspi::Dialog>),
+    /// A new frame of Hilda's eyes, already scaled.
+    HildaFrame(crate::hilda::Sprite),
 }
 
 #[derive(Clone)]

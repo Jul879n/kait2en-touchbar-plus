@@ -69,7 +69,7 @@ PageColumn {
                     Text { text: modelData[0] + " · " + app.tt(modelData[1]); color: Theme.tx; font.pixelSize: 14; font.weight: Font.DemiBold }
                     Text { text: app.tt(modelData[2]); color: Theme.mu; font.pixelSize: 12 }
                 }
-                TidPreview {
+                BarPreview {
                     anchors.right: parent.right
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
@@ -97,7 +97,7 @@ PageColumn {
                 width: parent.width
                 height: 54
                 Text { x: 0; anchors.verticalCenter: parent.verticalCenter; text: app.tt(modelData[1]); color: Theme.mu; font.pixelSize: 13 }
-                TidPreview {
+                BarPreview {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     viewWidth: 540

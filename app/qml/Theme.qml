@@ -37,10 +37,10 @@ QtObject {
 
     readonly property var chipIcons: ({
         "controls": "sliders-horizontal", "playback": "play", "brightness": "sun", "volume": "volume-2",
-        "keyboard_light": "keyboard", "screenshot": "camera", "emoji": "smile", "windows": "app-window",
+        "keyboard_light": "keyboard", "screenshot": "camera", "emoji": "smile", "windows": "app-window", "apps": "layout-grid",
         "pomodoro": "timer", "weather": "cloud-sun", "battery": "battery-full", "cpu": "cpu",
         "memory": "memory-stick", "temperature": "thermometer", "fan": "fan", "network": "arrow-down-up",
-        "next_event": "calendar", "clock": "clock", "now_playing": "play"
+        "next_event": "calendar", "clock": "clock", "now_playing": "play", "hilda": "smile"
     })
     readonly property var toggleIcons: ({
         "dnd": "bell-off", "night_light": "sun-moon", "caffeine": "coffee", "wifi": "wifi", "bluetooth": "bluetooth"
@@ -48,10 +48,10 @@ QtObject {
     // The bar is a grid of 24 columns; widths below must match `widget_cols` and the cells of the daemon.
     readonly property int gridCols: 24
     readonly property var itemCols: ({
-        "playback": 6, "volume": 8, "brightness": 4, "keyboard_light": 4, "now_playing": 8, "network": 4, "next_event": 4
+        "playback": 6, "volume": 8, "brightness": 4, "keyboard_light": 4, "now_playing": 8, "network": 4, "next_event": 4, "hilda": 4
     })
     // Keys an item is made of: a span can't be narrower than that.
-    readonly property var itemCells: ({ "playback": 3, "volume": 4, "brightness": 2, "keyboard_light": 2 })
+    readonly property var itemCells: ({ "playback": 3, "volume": 4, "brightness": 2, "keyboard_light": 2, "hilda": 2 })
     function naturalCols(item) { return itemCols[item.type] || 2 }
     function minCols(item) { return itemCells[item.type] || 1 }
     function colsOf(item) {

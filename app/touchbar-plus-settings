@@ -40,6 +40,7 @@ EN = {
     "Captura de pantalla": "Screenshot",
     "Interruptor": "Switch",
     "Canción actual": "Now playing",
+    "Ojos de Hilda": "Hilda's eyes",
     "Reloj": "Clock",
     "Clima": "Weather",
     "Batería": "Battery",
@@ -106,6 +107,17 @@ EN = {
     "Barra": "Bar",
     "Touch ID": "Touch ID",
     "Estilo": "Look",
+    "Estilo de teclas": "Key style",
+    "Contorno": "Outline",
+    "Tintado": "Tinted",
+    "Sólido": "Solid",
+    "Neón": "Neon",
+    "Texto con borde, como ahora.": "Outlined text, as before.",
+    "Fondo tenue y borde del color de cada tecla.": "Faint background and a border in each key's color.",
+    "Tecla rellena de color con texto oscuro.": "Key filled with color and dark text.",
+    "Fondo negro con borde de color brillante.": "Black background with a bright colored border.",
+    "Teclas F": "F keys",
+    "Especiales": "Special",
     "Vista previa": "Preview",
     "Colores": "Colors",
     "Textos": "Texts",
@@ -145,7 +157,8 @@ EN = {
     "Háptica también al soltar": "Haptics on release too",
     "Sensibilidad del deslizamiento de volumen (px por paso)": "Volume swipe sensitivity (px per step)",
     "Sensibilidad del deslizamiento de brillo (px por paso)": "Brightness swipe sensitivity (px per step)",
-    "Mantener para abrir el slider (ms)": "Hold to open the slider (ms)",
+    "Duración de la notificación (ms)": "Notification duration (ms)",
+    "Mantener volumen/brillo para repetir (ms)": "Hold volume/brightness to repeat (ms)",
     "Notificaciones en la barra": "Notifications on the bar",
     "Sugerencias de escritura": "Typing suggestions",
     "Canción nueva con la barra oscura": "New track on the dark bar",
@@ -168,9 +181,9 @@ EN = {
     "Al tocar «Controles»": "On tapping “Controls”",
     "Volumen": "Volume",
     "Brillo": "Brightness",
-    "Mostrar el slider de volumen": "Show the volume slider",
-    "Mostrar el slider de brillo": "Show the brightness slider",
-    "Mostrar el slider de luz del teclado": "Show the keyboard light slider",
+    "Mostrar el control de volumen": "Show the volume control",
+    "Mostrar el control de brillo": "Show the brightness control",
+    "Mostrar el control de luz del teclado": "Show the keyboard light control",
     "Columnas en blanco (de 12)": "Blank columns (of 12)",
     "Probar notificación": "Test notification",
     "Enviar aviso de prueba": "Send test notice",
@@ -178,13 +191,18 @@ EN = {
     "Si lo ve en la barra, funciona": "If you see it on the bar, it works",
     "Ancho del panel (px, 0 = toda la zona de app)": "Panel width (px, 0 = whole app zone)",
     "Se cierra tras (ms sin tocar)": "Closes after (ms without touching)",
-    "Deje al menos un slider.": "Keep at least one slider.",
+    "Deje al menos un control.": "Keep at least one control.",
     "Sin ítems: use «Agregar».": "No items: use “Add”.",
     "Predeterminado": "Default",
     "Paleta": "Palette",
-    "Agregar a:": "Add to:",
-    "Zona de app": "App zone",
-    "Strip fijo": "Fixed strip",
+    "Arrastre a la barra: a la izquierda del divisor va a la zona de app; a la derecha, al strip fijo. Con un clic se agrega a la zona de app, o al strip si tiene un ítem del strip seleccionado.": "Drag onto the bar: left of the divider goes to the app zone; right of it, to the fixed strip. A click adds to the app zone, or to the strip if a strip item is selected.",
+    "No hay espacio en el strip: arrastre el divisor a la izquierda o quite un ítem.": "No room in the strip: drag the divider left or remove an item.",
+    "No hay espacio en la zona de app: quite o achique un ítem, o arrastre el divisor a la derecha.": "No room in the app zone: remove or shrink an item, or drag the divider right.",
+    "Se quitaron ítems que no cabían: ": "Items that did not fit were removed: ",
+    "Cambiar de app": "Switch app",
+    "Zona de app · cambia según el perfil": "App zone · changes per profile",
+    "Strip fijo · igual en todos los perfiles": "Fixed strip · same in every profile",
+    "Divisor entre zona de app y strip": "Divider between app zone and strip",
     "Tecla personalizada…": "Custom key…",
     "Aplicación…": "Application…",
     "Inspector": "Inspector",
@@ -244,6 +262,7 @@ TYPE_LABELS = {
     "toggle": _("Interruptor"),
     "controls": _("Controles (volumen, brillo y luz del teclado)"),
     "now_playing": _("Canción actual"),
+    "hilda": _("Ojos de Hilda"),
     "clock": _("Reloj"),
     "weather": _("Clima"),
     "battery": _("Batería"),
@@ -256,6 +275,7 @@ TYPE_LABELS = {
     "pomodoro": _("Pomodoro"),
     "emoji": _("Emojis"),
     "windows": _("Ventanas"),
+    "apps": _("Cambiar de app"),
     "spacer": _("Espacio"),
 }
 TOGGLES = {
@@ -298,6 +318,8 @@ def dump_layout(data):
         f"strip = {tv(data['strip'])}",
         f"default = {tv(data['default'])}",
     ]
+    if "strip_col" in data:
+        out.insert(2, f"strip_col = {tv(data['strip_col'])}")
     for profile in data.get("profile", []):
         out += [
             "",
@@ -578,10 +600,11 @@ def main():
 
     class Backend(QObject):
         previewReady = pyqtSignal(str)
+        keysPreviewReady = pyqtSignal(str)
 
         def __init__(self):
             super().__init__()
-            self.preview_count = 0
+            self.preview_count = {"tid": 0, "keys": 0}
             self.preview_lock = threading.Lock()
 
         @pyqtSlot(result=str)
@@ -642,32 +665,41 @@ def main():
         @pyqtSlot(str)
         def touchIdPreview(self, body):
             """Renders the Touch ID prompt (six looks, four states) off the GUI thread; the result arrives as previewReady(json)."""
-            self.preview_count += 1
-            threading.Thread(target=self._render_preview, args=(body, self.preview_count), daemon=True).start()
+            self._start_preview(body, "--snapshot-touchid", "tid", self.previewReady)
 
-        def _render_preview(self, body, seq):
+        @pyqtSlot(str)
+        def keysPreview(self, body):
+            """Renders the F and special layers in the four key styles; the result arrives as keysPreviewReady(json)."""
+            self._start_preview(body, "--snapshot-keys", "keys", self.keysPreviewReady)
+
+        def _start_preview(self, body, flag, stem, signal):
+            self.preview_count[stem] += 1
+            seq = self.preview_count[stem]
+            threading.Thread(target=self._render_preview, args=(body, seq, flag, stem, signal), daemon=True).start()
+
+        def _render_preview(self, body, seq, flag, stem, signal):
             with self.preview_lock:
-                if seq != self.preview_count:  # a newer request replaced this one
+                if seq != self.preview_count[stem]:  # a newer request of this kind replaced this one
                     return
                 try:
                     cache = HOME / ".cache/touchbar-plus"
                     cache.mkdir(parents=True, exist_ok=True)
-                    prefix = cache / f"tid{seq}"
-                    config = cache / "preview-config.toml"
+                    prefix = cache / f"{stem}{seq}"
+                    config = cache / f"{stem}-preview-config.toml"
                     config.write_text(dump_flat(json.loads(body)), encoding="utf-8")
-                    result = subprocess.run([str(DAEMON), "--snapshot-touchid", str(prefix)], capture_output=True, text=True,
+                    result = subprocess.run([str(DAEMON), flag, str(prefix)], capture_output=True, text=True,
                                             timeout=20, env=dict(os.environ, KAIT2EN_TOUCHBAR_CONFIG=str(config)))
                     if result.returncode != 0:
                         answer = {"error": (result.stderr or result.stdout).strip()}
                     else:
-                        for old in cache.glob("tid*-*.png"):
-                            if not old.name.startswith(f"tid{seq}-"):
+                        for old in cache.glob(f"{stem}*-*.png"):
+                            if not old.name.startswith(f"{stem}{seq}-"):
                                 old.unlink(missing_ok=True)
                         answer = {"prefix": str(prefix), "url": QUrl.fromLocalFile(str(prefix)).toString()}
                 except Exception as error:
                     answer = {"error": str(error)}
             answer["seq"] = seq
-            self.previewReady.emit(json.dumps(answer))
+            signal.emit(json.dumps(answer))
 
         @pyqtSlot(result=str)
         def testNotice(self):
