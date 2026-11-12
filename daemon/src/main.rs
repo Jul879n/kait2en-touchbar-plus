@@ -888,6 +888,12 @@ impl Runtime {
             return;
         }
         self.start_panel_fade(1, now);
+        // Una tarjeta ya visible no se queda sobre los controles: espera a que se cierren.
+        if let Some(card) = self.toast.as_mut().and_then(|toast| toast.card.take()) {
+            self.toast = None;
+            self.pending_card = Some((card, now + PENDING_CARD_MS));
+            self.pending_card_ms = Some(now + PENDING_CARD_POLL_MS);
+        }
         self.transient = None;
         self.suggest = None;
         let mut levels = [None; 3];
