@@ -263,7 +263,7 @@ impl Eyes {
                         self.gaze_until = now;
                     }
                     None if now >= self.gaze_until => {
-                        self.gaze = if self.rng.next() % 2 == 0 {
+                        self.gaze = if self.rng.next().is_multiple_of(2) {
                             *self.rng.pick(&["mira-izq", "mira-der", "mira-arr", "mira-aba"])
                         } else {
                             "reposo"

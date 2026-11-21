@@ -5,6 +5,7 @@ import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
+import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -50,6 +51,18 @@ export default class TouchbarPlusExtension extends Extension {
         this._emitFocus();
 
         this._watchNotifications();
+        this._injections = new InjectionManager();
+        // Si el nivel cambió desde fuera (touchbar, teclas) el valor sin ajustar del
+        // slider quedó viejo y la rueda calcularía desde él.
+        if (typeof Slider.prototype._applyDelta === 'function') {
+            this._injections.overrideMethod(Slider.prototype, '_applyDelta', original =>
+                function (delta) {
+                    if (this._unsnappedValue !== null && this._unsnappedValue !== undefined &&
+                        Math.abs(this._snapToMark(this._unsnappedValue) - this._value) > 1e-6)
+                        this._unsnappedValue = null;
+                    return original.call(this, delta);
+                });
+        }
         this._watchSuggestions();
     }
 
@@ -134,7 +147,7 @@ export default class TouchbarPlusExtension extends Extension {
             if (!this._handlers)
                 return;
             const manager = getIBusManager();
-            this._injections = new InjectionManager();
+            this._injections ??= new InjectionManager();
             const extension = this;
             const popup = manager._candidatePopup;
             this._injections.overrideMethod(popup, 'setPanelService', original =>

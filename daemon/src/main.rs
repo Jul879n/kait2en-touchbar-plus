@@ -90,8 +90,6 @@ const LEVEL_POLL_MS: u64 = 50;
 const LEVEL_POLL_WINDOW_MS: u64 = 600;
 /// Deja terminar al hilo `level-writer` antes de releer volumen y teclado.
 const PANEL_REREAD_MS: u64 = 300;
-/// Bajo este nivel el panel escribe el brillo directo: las teclas de GNOME no bajan de su mínimo.
-const BRIGHTNESS_DIRECT_BELOW: u32 = 10;
 /// The level feedback crossfades to the other side of the fingers once
 /// they pass the middle of the bar by this much.
 const LEVEL_SIDE_HYSTERESIS_PX: f64 = 60.0;
@@ -249,8 +247,6 @@ struct Panel {
     repeat: Option<PanelRepeat>,
     until_ms: u64,
     /// Relectura del brillo real tras pulsar las teclas del sistema.
-    read_ms: Option<u64>,
-    read_until_ms: u64,
     /// Relectura de volumen y teclado tras soltar −/+.
     reread_ms: Option<u64>,
 }
@@ -905,8 +901,6 @@ impl Runtime {
             muted: levels::volume().muted,
             repeat: None,
             until_ms: now + self.plus.controls.timeout_ms,
-            read_ms: None,
-            read_until_ms: 0,
             reread_ms: None,
         });
     }
@@ -933,35 +927,6 @@ impl Runtime {
             return Ok(());
         };
         panel.until_ms = now + timeout;
-        if control == layout::Control::Brightness {
-            // También al subir: las teclas del sistema saltarían varios puntos desde el mínimo.
-            if let Some(level) = panel.levels[control.index()].filter(|l| *l <= BRIGHTNESS_DIRECT_BELOW) {
-                let new = levels::stepped(level, repeat.delta);
-                if new == level {
-                    if !repeat.stop_felt {
-                        self.haptic.firm();
-                        repeat.stop_felt = true;
-                    }
-                } else {
-                    panel.levels[control.index()] = Some(new);
-                    levels::set_control(control, new);
-                    self.haptic.click();
-                    repeat.stop_felt = false;
-                }
-                return self.refresh_widgets();
-            }
-            // Por las teclas del sistema: el autobrillo lo toma como cambio
-            // manual (escribir directo hace que vuelva solo a su curva).
-            let key = if repeat.delta > 0 { Key::BrightnessUp } else { Key::BrightnessDown };
-            panel.read_ms.get_or_insert(now + LEVEL_POLL_MS);
-            panel.read_until_ms = now + LEVEL_POLL_WINDOW_MS;
-            if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 {
-                self.haptic.click();
-            }
-            self.keyboard.press(key)?;
-            self.keyboard.release()?;
-            return self.refresh_widgets();
-        }
         if let Some(level) = panel.levels[control.index()] {
             let new = levels::stepped(level, repeat.delta);
             if new == level {
@@ -975,7 +940,7 @@ impl Runtime {
                     panel.muted = new == 0;
                 }
                 levels::set_control(control, new);
-                if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 || new % 5 == 0 {
+                if levels::repeat_interval_ms(now.saturating_sub(repeat.start_ms)) >= 90 || new.is_multiple_of(5) {
                     self.haptic.click();
                 }
                 repeat.stop_felt = false;
@@ -1009,30 +974,13 @@ impl Runtime {
         {
             if let Some(panel) = self.panel.as_mut() {
                 let items = &self.plus.controls.items;
-                for control in items.iter().filter(|c| **c != layout::Control::Brightness) {
+                for control in items.iter() {
                     panel.levels[control.index()] = levels::read_control(*control);
                 }
                 if items.contains(&layout::Control::Volume) {
                     panel.muted = levels::volume().muted;
                 }
                 panel.reread_ms = None;
-            }
-            self.refresh_widgets()?;
-        }
-        if self.panel.as_ref().and_then(|p| p.read_ms).is_some_and(|due| now >= due) {
-            let slots: Vec<usize> = self
-                .plus
-                .controls
-                .items
-                .iter()
-                .filter(|c| **c == layout::Control::Brightness)
-                .map(|c| c.index())
-                .collect();
-            if let Some(panel) = self.panel.as_mut() {
-                for slot in slots {
-                    panel.levels[slot] = levels::read_control(layout::Control::Brightness);
-                }
-                panel.read_ms = (now < panel.read_until_ms).then_some(now + LEVEL_POLL_MS);
             }
             self.refresh_widgets()?;
         }
@@ -1430,19 +1378,7 @@ impl Runtime {
         let Some(hold) = self.level_hold.as_mut() else {
             return Ok(());
         };
-        if control == layout::Control::Brightness {
-            // Teclas del sistema (ver `panel_step`); el nivel llega por la
-            // relectura y detecta los topes.
-            let key = if delta > 0 { Key::BrightnessUp } else { Key::BrightnessDown };
-            self.keyboard.press(key)?;
-            self.keyboard.release()?;
-            self.level_poll_ms.get_or_insert(now + LEVEL_POLL_MS);
-            self.level_poll_until_ms = now + LEVEL_POLL_WINDOW_MS;
-            self.level_stepped = true;
-            if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 {
-                self.haptic.click();
-            }
-        } else if let Some(level) = hold.level {
+        if let Some(level) = hold.level {
             let new = levels::stepped(level, delta);
             if new == level {
                 if !hold.stop_felt {
@@ -1458,7 +1394,7 @@ impl Runtime {
                     self.level.muted = new == 0;
                 }
                 self.level_dirty = true;
-                if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 || new % 5 == 0 {
+                if levels::repeat_interval_ms(now.saturating_sub(start)) >= 90 || new.is_multiple_of(5) {
                     self.haptic.click();
                 }
             }
@@ -1931,7 +1867,7 @@ impl Runtime {
             if self
                 .level_hold
                 .as_ref()
-                .is_some_and(|h| h.start_ms.is_some() && h.control == layout::Control::Volume)
+                .is_some_and(|h| h.start_ms.is_some())
             {
                 continue;
             }
@@ -2132,11 +2068,10 @@ impl Runtime {
 
     fn activity_timeout(&mut self) {
         self.activity_deadline_ms = None;
-        if self.visible && self.touch_id == TouchIdState::Idle && !self.config.always_on {
-            if let Err(error) = self.go_dark(false) {
+        if self.visible && self.touch_id == TouchIdState::Idle && !self.config.always_on
+            && let Err(error) = self.go_dark(false) {
                 eprintln!("kait2en-touchbar-plus: darken Touch Bar after inactivity: {error:#}");
             }
-        }
         match kbdlight::brightness() {
             Ok(brightness) => {
                 self.activity_current_brightness = Some(brightness);
@@ -2279,11 +2214,9 @@ impl Runtime {
                     .as_ref()
                     .is_some_and(|fade| fade.to == 0))
             && let Some(brightness) = self.activity_restore_brightness
-        {
-            if let Err(error) = kbdlight::set_brightness(brightness) {
+            && let Err(error) = kbdlight::set_brightness(brightness) {
                 eprintln!("kait2en-touchbar-plus: restore keyboard brightness on exit: {error:#}");
             }
-        }
     }
 
     /// `Some(true)` for next, `Some(false)` for previous.
@@ -2634,11 +2567,10 @@ impl Runtime {
                 }
             }
             ItemKind::NowPlaying => {
-                if let Some(player) = self.player.as_ref().map(|info| info.player.clone()) {
-                    if let Err(error) = self.mpris.play_pause(&player) {
+                if let Some(player) = self.player.as_ref().map(|info| info.player.clone())
+                    && let Err(error) = self.mpris.play_pause(&player) {
                         eprintln!("kait2en-touchbar-plus: play/pause: {error:#}");
                     }
-                }
             }
             ItemKind::Clock => CustomKey::run("gnome-clocks"),
             ItemKind::Weather => CustomKey::run("gnome-weather"),
@@ -3131,13 +3063,11 @@ impl Runtime {
         if self.recent_notices.iter().any(|(t, b, _)| *t == title && *b == body) {
             // The copy with an icon completes a card that showed the bell.
             let showing = self.toast.as_ref().and_then(|toast| toast.card.clone());
-            if let Some(shown) = showing.filter(|card| card.title == title && card.icon == renderer::NoticeIcon::Lucide("bell")) {
-                if icon != renderer::NoticeIcon::Lucide("bell") {
-                    if let Some(toast) = self.toast.as_mut() {
+            if let Some(shown) = showing.filter(|card| card.title == title && card.icon == renderer::NoticeIcon::Lucide("bell"))
+                && icon != renderer::NoticeIcon::Lucide("bell")
+                    && let Some(toast) = self.toast.as_mut() {
                         toast.card = Some(renderer::NoticeCard { icon, ..shown });
                     }
-                }
-            }
             return Ok(());
         }
         if self.recent_notices.len() >= 8 {
@@ -3897,7 +3827,6 @@ impl Runtime {
         deadlines.extend(self.pomo_next_ms);
         deadlines.extend(self.panel.as_ref().map(|panel| panel.until_ms));
         deadlines.extend(self.panel.as_ref().and_then(|p| p.repeat.as_ref()).map(|r| r.next_ms));
-        deadlines.extend(self.panel.as_ref().and_then(|p| p.read_ms));
         deadlines.extend(self.widgets_next_ms);
         deadlines.extend(self.np_next_ms);
         deadlines.extend(self.toggles_next_ms);
@@ -4137,6 +4066,18 @@ fn snapshot(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// El servicio parte antes de que logind dé el ACL del asiento sobre `/dev/uinput`.
+fn wait_for_uinput() {
+    for _ in 0..120 {
+        match OpenOptions::new().write(true).open("/dev/uinput") {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            _ => return,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     if std::env::args().any(|arg| arg == "--attach") {
         return usb::ensure_display_configuration();
@@ -4197,6 +4138,7 @@ fn main() -> Result<()> {
 
     i18n::set(&config.language);
     let state = PersistentState::load(&state_file, &config);
+    wait_for_uinput();
     let mut runtime = Runtime::new(config, state)?;
     if runtime.config.always_on {
         runtime.wake(false)?;

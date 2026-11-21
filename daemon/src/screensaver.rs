@@ -27,12 +27,13 @@ pub fn watch(bus: Bus) -> Result<()> {
 }
 
 fn retry(name: &str, listen: impl Fn() -> Result<()>) {
-    let mut reported = false;
+    // Los primeros fallos son gnome-shell aún sin iniciar: se informa solo el tercero.
+    let mut failures = 0u32;
     loop {
         if let Err(error) = listen() {
-            if !reported {
+            failures += 1;
+            if failures == 3 {
                 eprintln!("kait2en-touchbar-plus: {name}: {error:#}");
-                reported = true;
             }
         }
         thread::sleep(Duration::from_secs(5));

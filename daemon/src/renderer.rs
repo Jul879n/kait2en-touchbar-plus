@@ -674,6 +674,7 @@ impl Layout {
     }
 
     /// Like `from_items`, with each item's grid slot (column and width).
+    #[allow(clippy::too_many_arguments)]
     pub fn from_placed(
         app: &[ItemKind],
         app_slots: &[Slot],
@@ -1023,8 +1024,6 @@ impl Canvas {
         }
     }
 
-    /// Centered `App: text` message, for notifications and timer alerts.
-
     /// Hilda's eyes centered in their span.
     fn hilda(&mut self, button: &Button, sprite: &crate::hilda::Sprite) {
         let span = i32::from(button.right.saturating_sub(button.left));
@@ -1089,7 +1088,7 @@ impl Canvas {
             / u32::from(self.base.0.max(self.base.1).max(self.base.2)).max(1);
         let width = self.width as i32;
         let target = self.pixmap.pixels_mut();
-        for (index, rgba) in pixels.chunks_exact(4).enumerate() {
+        for (index, rgba) in pixels.as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (left + (index as u32 % size) as i32, top + (index as u32 / size) as i32);
             if x < 0 || y < 0 || x >= width || y >= i32::from(self.height) || rgba[3] == 0 {
                 continue;

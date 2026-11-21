@@ -318,14 +318,13 @@ fn create_template() {
     let created = fs::create_dir_all(plus_dir())
         .and_then(|()| OpenOptions::new().write(true).create_new(true).open(&target))
         .and_then(|mut file| file.write_all(TEMPLATE.as_bytes()));
-    if let Err(error) = created {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
+    if let Err(error) = created
+        && error.kind() != std::io::ErrorKind::AlreadyExists {
             eprintln!(
                 "kait2en-touchbar-plus: could not create {}: {error}",
                 target.display()
             );
         }
-    }
 }
 
 pub fn state_path() -> PathBuf {
@@ -349,7 +348,7 @@ mod tests {
 
     #[test]
     fn touch_id_settings_are_validated() {
-        let check = |body: &str| toml::from_str::<Config>(body).unwrap().validate().map(|()| ());
+        let check = |body: &str| toml::from_str::<Config>(body).unwrap().validate();
         assert!(check("touch_id_style = \"B\"\ntouch_id_color_waiting = \"#4da3ff\"").is_ok());
         assert!(check("touch_id_style = \"G\"").is_err());
         assert!(check("touch_id_color_failed = \"red\"").is_err());

@@ -27,6 +27,9 @@ need "libinput (libinput-devel)" pkg-config --exists libinput
 for c in gtk-launch magick notify-send; do
   command -v "$c" >/dev/null 2>&1 || echo "Aviso: falta $c (algunas funciones no andarán)" >&2
 done
+rule=90-touchbar-plus-backlight.rules
+cmp -s "$here/udev/$rule" "/etc/udev/rules.d/$rule" || \
+  echo "Aviso: para conservar el brillo bajo al reiniciar: sudo install -m644 \"$here/udev/$rule\" /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger -s backlight -c change" >&2
 
 ( cd "$here/daemon" && cargo build --release --locked )
 install -Dm755 "$CARGO_TARGET_DIR/release/kait2en-touchbar-plus" "$bin"
@@ -37,6 +40,7 @@ cat > "$dropin/plus.conf" <<'CONF'
 ExecStart=
 ExecStart=%h/.local/bin/kait2en-touchbar-plus
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+PrivateTmp=false
 CONF
 
 # Extensión: detectar si cambió antes de copiar.

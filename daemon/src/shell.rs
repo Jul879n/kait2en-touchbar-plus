@@ -25,12 +25,11 @@ pub fn watch(bus: Bus) -> Result<()> {
         .spawn(move || {
             let mut reported = false;
             loop {
-                if let Err(error) = listen(&bus) {
-                    if !reported {
+                if let Err(error) = listen(&bus)
+                    && !reported {
                         eprintln!("kait2en-touchbar-plus: shell extension link: {error:#}");
                         reported = true;
                     }
-                }
                 thread::sleep(Duration::from_secs(5));
             }
         })?;
@@ -47,11 +46,10 @@ fn listen(bus: &Bus) -> Result<()> {
         .build();
     let messages = MessageIterator::for_match_rule(rule, &connection, None)?;
     // The focus from before this daemon started: signals only report changes.
-    if let Ok(reply) = connection.call_method(Some(NAME), PATH, Some(NAME), "GetFocus", &()) {
-        if let Ok((app,)) = reply.body().deserialize::<(String,)>() {
+    if let Ok(reply) = connection.call_method(Some(NAME), PATH, Some(NAME), "GetFocus", &())
+        && let Ok((app,)) = reply.body().deserialize::<(String,)>() {
             bus.send(Ext::Focus(app));
         }
-    }
     for message in messages {
         let message = message?;
         let header = message.header();

@@ -72,7 +72,8 @@ fn listen(bus: &Bus) -> Result<()> {
         let header = message.header();
         match header.member().map(|m| m.as_str()) {
             Some("EventsAddedOrUpdated") => {
-                let list: Vec<(String, String, i64, i64, HashMap<String, OwnedValue>)> =
+                type EventRow = (String, String, i64, i64, HashMap<String, OwnedValue>);
+                let list: Vec<EventRow> =
                     message.body().deserialize()?;
                 for (id, summary, start, end, _) in list {
                     events.insert(id, Event { summary, start, end });

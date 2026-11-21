@@ -108,6 +108,7 @@ impl Canvas {
 
     /// Fills `x0..x1` with a horizontal gradient from transparent to `color`
     /// at `alpha` (0..1), or the reverse.
+    #[allow(clippy::too_many_arguments)]
     fn gradient(&mut self, x0: f32, x1: f32, y0: f32, y1: f32, color: Rgb, alpha: f32, reverse: bool) {
         let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
         let clear = Color::from_rgba8(color.0, color.1, color.2, 0);
@@ -127,8 +128,7 @@ impl Canvas {
             ),
             Rect::from_ltrb(lo.max(0.0), y0, hi.min(f32::from(self.width)), y1),
         ) {
-            let mut paint = Paint::default();
-            paint.shader = shader;
+            let paint = Paint { shader, ..Paint::default() };
             self.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
         }
     }
@@ -183,8 +183,7 @@ impl Canvas {
             ),
             Rect::from_ltrb(from, 0.0, width, height),
         ) {
-            let mut paint = Paint::default();
-            paint.shader = shader;
+            let paint = Paint { shader, ..Paint::default() };
             self.pixmap.fill_rect(rect, &paint, Transform::identity(), None);
         }
         if !p.matched() {

@@ -480,11 +480,10 @@ fn place(raw: &ItemRaw) -> Result<Slot> {
     if raw.col.is_some_and(|col| !in_grid(col)) || raw.span.is_some_and(|span| !in_grid(span)) {
         bail!("col and span must be 1 to {GRID_COLS}");
     }
-    if let (Some(col), Some(span)) = (raw.col, raw.span) {
-        if col + span - 1 > GRID_COLS {
+    if let (Some(col), Some(span)) = (raw.col, raw.span)
+        && col + span - 1 > GRID_COLS {
             bail!("col {col} with span {span} leaves the {GRID_COLS} columns");
         }
-    }
     Ok(Slot { col: raw.col.map(|col| col - 1), span: raw.span })
 }
 
