@@ -4,6 +4,7 @@
 //! only sends keys. The desktop applies them, so these are read back.
 
 use std::{
+    collections::HashMap,
     fs,
     io::Write,
     os::unix::net::UnixStream,
@@ -17,6 +18,7 @@ use std::{
 };
 
 use anyhow::Result;
+use zbus::zvariant::OwnedValue;
 
 use crate::{layout::Control, renderer::LevelKind};
 
@@ -157,11 +159,14 @@ fn parse_wpctl(text: &str) -> Level {
 /// The display backlight, chosen like desktops do: firmware before platform
 /// before raw, never one of the Touch Bar's own controllers.
 pub fn brightness() -> Level {
-    let percent = screen_backlight().and_then(|path| {
-        let current: u64 = read(&path, "brightness")?.parse().ok()?;
-        let max: u64 = read(&path, "max_brightness")?.parse().ok()?;
-        (max > 0).then(|| backlight_percent(current, max))
-    });
+    let percent = mutter_backlight()
+        .map(|b| mutter_percent(b.value, b.min, b.max))
+        .or_else(|| {
+            let path = screen_backlight()?;
+            let current: u64 = read(&path, "brightness")?.parse().ok()?;
+            let max: u64 = read(&path, "max_brightness")?.parse().ok()?;
+            (max > 0).then(|| backlight_percent(current, max))
+        });
     Level {
         percent,
         muted: false,
@@ -279,6 +284,22 @@ fn apply_control(control: Control, percent: u32) {
             ])
             .status(),
         Control::Brightness => {
+            if let Some(b) = mutter_backlight() {
+                // El serial cambia al reconfigurar monitores: se relee en cada escritura.
+                if let Some(session) = session() {
+                    let result = session.call_method(
+                        Some(MUTTER),
+                        MUTTER_PATH,
+                        Some(MUTTER),
+                        "SetBacklight",
+                        &(b.serial, b.connector.as_str(), mutter_value(b.min, b.max, percent)),
+                    );
+                    if let Err(error) = result {
+                        eprintln!("kait2en-touchbar-plus: set Brightness: {error}");
+                    }
+                }
+                return;
+            }
             let Some(path) = screen_backlight() else { return };
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
             let max: u64 = read(&path, "max_brightness").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -303,6 +324,69 @@ fn apply_control(control: Control, percent: u32) {
     if let Err(error) = status {
         eprintln!("kait2en-touchbar-plus: set {control:?}: {error}");
     }
+}
+
+const MUTTER: &str = "org.gnome.Mutter.DisplayConfig";
+const MUTTER_PATH: &str = "/org/gnome/Mutter/DisplayConfig";
+
+fn session() -> Option<&'static zbus::blocking::Connection> {
+    static SESSION: OnceLock<zbus::blocking::Connection> = OnceLock::new();
+    if let Some(connection) = SESSION.get() {
+        return Some(connection);
+    }
+    let connection = zbus::blocking::Connection::session().ok()?;
+    Some(SESSION.get_or_init(|| connection))
+}
+
+/// Backlight que gestiona Mutter: su piso (`min`) es el 0 % del slider de GNOME.
+struct MutterBacklight {
+    serial: u32,
+    connector: String,
+    min: i32,
+    max: i32,
+    value: i32,
+}
+
+fn mutter_backlight() -> Option<MutterBacklight> {
+    let (value,): (OwnedValue,) = session()?
+        .call_method(
+            Some(MUTTER),
+            MUTTER_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(MUTTER, "Backlight"),
+        )
+        .ok()?
+        .body()
+        .deserialize()
+        .ok()?;
+    let (serial, entries): (u32, Vec<HashMap<String, OwnedValue>>) = value.try_into().ok()?;
+    entries.iter().find_map(|entry| {
+        let int = |key: &str| entry.get(key).and_then(|v| i32::try_from(v).ok());
+        let active = entry.get("active").and_then(|v| bool::try_from(v).ok())?;
+        let connector = String::try_from(entry.get("connector")?.try_clone().ok()?).ok()?;
+        let (min, max) = (int("min")?, int("max")?);
+        (active && max > min).then(|| MutterBacklight {
+            serial,
+            connector,
+            min,
+            max,
+            value: int("value").unwrap_or(min),
+        })
+    })
+}
+
+/// Misma fórmula que `_getRelativeBrightness` del shell.
+fn mutter_percent(value: i32, min: i32, max: i32) -> u32 {
+    let span = i64::from(max - min).max(1);
+    let scaled = (i64::from(value) - i64::from(min)) * 100;
+    ((scaled + span / 2).div_euclid(span)).clamp(0, 100) as u32
+}
+
+/// Inversa de `_setRelativeBrightness`.
+fn mutter_value(min: i32, max: i32, percent: u32) -> i32 {
+    let span = i64::from(max - min);
+    min + ((span * i64::from(percent.min(100)) + 50) / 100) as i32
 }
 
 fn screen_backlight() -> Option<std::path::PathBuf> {
@@ -357,6 +441,18 @@ mod tests {
         assert_eq!(backlight_value(65535, 100), 65535);
         assert_eq!(backlight_value(65535, 1), 655);
         assert_eq!(backlight_value(0, 50), 1);
+    }
+
+    #[test]
+    fn mutter_mapping() {
+        assert_eq!(mutter_percent(655, 655, 65535), 0);
+        assert_eq!(mutter_percent(65535, 655, 65535), 100);
+        assert_eq!(mutter_value(655, 65535, 0), 655);
+        assert_eq!(mutter_value(655, 65535, 100), 65535);
+        assert_eq!(mutter_value(655, 65535, 1), 1304);
+        for p in 0..=100 {
+            assert_eq!(mutter_percent(mutter_value(655, 65535, p), 655, 65535), p);
+        }
     }
 
     #[test]

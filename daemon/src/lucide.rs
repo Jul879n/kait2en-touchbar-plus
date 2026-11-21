@@ -150,7 +150,7 @@ fn parse_shapes(name: &str) -> Option<Vec<Shape>> {
                         .filter(|part| !part.is_empty())
                         .filter_map(|part| part.parse().ok())
                         .collect();
-                    for (index, pair) in points.chunks_exact(2).enumerate() {
+                    for (index, pair) in points.as_chunks::<2>().0.iter().enumerate() {
                         if index == 0 {
                             builder.move_to(pair[0], pair[1]);
                         } else {

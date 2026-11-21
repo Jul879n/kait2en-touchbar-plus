@@ -28,12 +28,11 @@ pub fn watch(bus: Bus) -> Result<()> {
         .spawn(move || {
             let mut reported = false;
             loop {
-                if let Err(error) = listen(&bus) {
-                    if !reported {
+                if let Err(error) = listen(&bus)
+                    && !reported {
                         eprintln!("kait2en-touchbar-plus: notification monitor: {error:#}");
                         reported = true;
                     }
-                }
                 thread::sleep(Duration::from_secs(10));
             }
         })?;

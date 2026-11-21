@@ -13,4 +13,6 @@ rm -rf "$HOME/.local/share/gnome-shell/extensions/touchbar-plus@kait2en" \
        "$HOME/.local/bin/kait2en-touchbar-plus"
 systemctl --user daemon-reload
 systemctl --user restart kait2en-touchbar
+[ -e /etc/udev/rules.d/90-touchbar-plus-backlight.rules ] && \
+  echo "Para quitar la regla de brillo: sudo rm /etc/udev/rules.d/90-touchbar-plus-backlight.rules && sudo udevadm control --reload"
 echo "Daemon de KaiT2en restaurado. Para volver también la fuente de entrada y la config: ./restore.sh backup/<fecha>"

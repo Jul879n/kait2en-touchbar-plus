@@ -129,6 +129,7 @@ impl Canvas {
         self.color = full;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn notice_body(&mut self, card: &NoticeCard, fit: &NoticeFit, left: f32, zone_right: f32, alpha: f32, motion: NoticeMotion, swap: f32, clip: (f32, f32)) {
         let full = self.color;
         let height = f32::from(self.height);

@@ -22,7 +22,8 @@ pub fn icon_path(desktop_id: &str) -> Option<PathBuf> {
 pub fn notice_icon(app: &str, icon: &str) -> Option<PathBuf> {
     // Notifications come from any process: results (also misses) are kept so
     // the desktop entries are not scanned again for every message.
-    static CACHE: Mutex<Option<HashMap<(String, String), Option<PathBuf>>>> = Mutex::new(None);
+    type IconCache = HashMap<(String, String), Option<PathBuf>>;
+    static CACHE: Mutex<Option<IconCache>> = Mutex::new(None);
     let key = (app.to_owned(), icon.to_owned());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
@@ -45,11 +46,10 @@ fn find_notice_icon(app: &str, icon: &str) -> Option<PathBuf> {
         let id = if id.ends_with(".desktop") { id.to_owned() } else { format!("{id}.desktop") };
         icon_path(&id)
     };
-    if !icon.is_empty() {
-        if let Some(path) = entry(icon).or_else(|| untrusted_icon_file(icon)) {
+    if !icon.is_empty()
+        && let Some(path) = entry(icon).or_else(|| untrusted_icon_file(icon)) {
             return Some(path);
         }
-    }
     if app.is_empty() {
         return None;
     }
@@ -130,11 +130,10 @@ fn icon_name(desktop_id: &str) -> Option<String> {
         for line in body.lines() {
             if line.starts_with('[') {
                 in_entry = line == "[Desktop Entry]";
-            } else if in_entry {
-                if let Some(value) = line.strip_prefix("Icon=") {
+            } else if in_entry
+                && let Some(value) = line.strip_prefix("Icon=") {
                     return Some(value.trim().to_owned());
                 }
-            }
         }
         None
     })

@@ -1,0 +1,2 @@
+# systemd-backlight no sube el brillo guardado al 5 % (man systemd-backlight@.service).
+SUBSYSTEM=="backlight", KERNEL=="gmux_backlight", ENV{ID_BACKLIGHT_CLAMP}="0"

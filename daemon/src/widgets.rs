@@ -307,8 +307,7 @@ mod tests {
 
     #[test]
     fn battery_icon_follows_level_and_charge() {
-        let mut data = WidgetData::default();
-        data.battery = Some((87, false));
+        let mut data = WidgetData { battery: Some((87, false)), ..WidgetData::default() };
         assert_eq!(view(WidgetKind::Battery, &data), (Some("battery-full"), "87%".into()));
         data.battery = Some((30, false));
         assert_eq!(view(WidgetKind::Battery, &data).0, Some("battery-medium"));
